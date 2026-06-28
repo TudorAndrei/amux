@@ -24,7 +24,7 @@ age() {
 rows="$("$AMUX" list --json | jq -r '
   .records
   | to_entries
-  | sort_by(.value.attention | not, .value.updated_at)
+  | sort_by([(.value.attention | not), .value.updated_at])
   | reverse
   | .[]
   | [

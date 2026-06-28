@@ -113,7 +113,7 @@ amux_list() {
     amux_records_jq '
       .records
       | to_entries
-      | sort_by(.value.attention | not, .value.agent, .value.updated_at)
+      | sort_by([(.value.attention | not), .value.agent, .value.updated_at])
       | reverse
       | .[]
       | [.value.agent, .value.status, (.value.tmux_session // "-"), (.value.tmux_pane // "-"), (.value.reason // "-"), (.value.cwd // "-")]
@@ -133,4 +133,3 @@ amux_status() {
         end
     '
 }
-
