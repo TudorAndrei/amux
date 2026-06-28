@@ -15,11 +15,11 @@
 - [x] Commit: `feat(tmux): add status and attention picker`
 
 ## Phase 3: Dotfiles tmux Installation
-- [ ] Update `../tmux.conf` to load `configs/tmux/amux/amux.tmux`.
-- [ ] Add the `amux` status segment to the existing `status-right` without removing the date/time segment.
-- [ ] Decide whether `prefix + l` stays on `../session-picker.sh` or moves to the new `amux` picker after feature parity.
-- [ ] Document standalone and dotfiles-local tmux installation paths in `README.md`.
-- [ ] Commit: `chore(dotfiles): install amux in local tmux config`
+- [x] Update `../tmux.conf` to load `configs/tmux/amux/amux.tmux`.
+- [x] Add the `amux` status segment to the existing `status-right` without removing the date/time segment.
+- [x] Decide whether `prefix + l` stays on `../session-picker.sh` or moves to the new `amux` picker after feature parity.
+- [x] Document standalone and dotfiles-local tmux installation paths in `README.md`.
+- [x] Commit: `chore(dotfiles): install amux in local tmux config`
 
 ## Phase 4: Global Agent Hook Assets
 - [ ] Add `hooks/codex/hooks.json` for global Codex lifecycle and permission events.

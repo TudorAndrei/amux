@@ -85,3 +85,22 @@ run-shell /path/to/amux/amux.tmux
 ```tmux
 #(/path/to/amux/scripts/status.sh)
 ```
+
+### Dotfiles-local install
+
+This checkout is intended to be loaded from:
+
+```text
+/Users/tudor/dotfiles/configs/tmux/amux
+```
+
+The current dotfiles tmux config at `/Users/tudor/dotfiles/configs/tmux/tmux.conf`
+loads the plugin with:
+
+```tmux
+run-shell /Users/tudor/dotfiles/configs/tmux/amux/amux.tmux
+```
+
+It keeps the existing `prefix + l` session picker on
+`/Users/tudor/dotfiles/configs/tmux/session-picker.sh` and uses `prefix + A`
+for the `amux` picker until the new picker has full session-picker parity.
