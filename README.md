@@ -56,6 +56,24 @@ Initial normalization is conservative:
 tests/smoke.sh
 ```
 
+## Global Hooks
+
+Preview hook installation:
+
+```bash
+scripts/install-hooks.sh --dry-run
+```
+
+Install global hooks:
+
+```bash
+scripts/install-hooks.sh --write
+```
+
+The installer writes backups before replacing existing global config files. Hook
+assets live under `hooks/` and are rendered with the absolute path to
+`bin/amux`.
+
 ## tmux
 
 Load the plugin directly:
