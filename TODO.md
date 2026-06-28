@@ -22,11 +22,11 @@
 - [x] Commit: `chore(dotfiles): install amux in local tmux config`
 
 ## Phase 4: Global Agent Hook Assets
-- [ ] Add `hooks/codex/hooks.json` for global Codex lifecycle and permission events.
-- [ ] Add `hooks/claude/settings.fragment.json` or equivalent mergeable global Claude hook config.
-- [ ] Add `hooks/opencode/amux.js` as a global opencode plugin.
-- [ ] Add `hooks/pi/amux.ts` as a Pi extension.
-- [ ] Document best-effort event mappings where an agent lacks an explicit attention signal.
+- [x] Add `hooks/codex/hooks.json` for global Codex lifecycle and permission events.
+- [x] Add `hooks/claude/settings.fragment.json` or equivalent mergeable global Claude hook config.
+- [x] Add `hooks/opencode/amux.js` as a global opencode plugin.
+- [x] Add `hooks/pi/amux.ts` as a Pi extension.
+- [x] Document best-effort event mappings where an agent lacks an explicit attention signal.
 - [ ] Commit: `feat(hooks): add global integrations for supported agents`
 
 ## Phase 5: Installer and Documentation
