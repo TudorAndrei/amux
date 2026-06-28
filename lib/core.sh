@@ -27,6 +27,10 @@ amux_events_file() {
     printf '%s/events.jsonl\n' "$(amux_state_dir)"
 }
 
+amux_stale_seconds() {
+    printf '%s\n' "${AMUX_STALE_SECONDS:-86400}"
+}
+
 amux_now() {
     date +%s
 }
@@ -45,4 +49,3 @@ amux_tmux_value() {
         tmux display-message -p "$format" 2>/dev/null || true
     fi
 }
-

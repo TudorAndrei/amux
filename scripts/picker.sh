@@ -4,23 +4,6 @@ set -euo pipefail
 AMUX_ROOT="${AMUX_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 AMUX="$AMUX_ROOT/bin/amux"
 
-age() {
-    local updated now delta
-    updated="$1"
-    now="$(date +%s)"
-    delta=$((now - updated))
-
-    if [ "$delta" -lt 60 ]; then
-        printf '%ss' "$delta"
-    elif [ "$delta" -lt 3600 ]; then
-        printf '%sm' "$((delta / 60))"
-    elif [ "$delta" -lt 86400 ]; then
-        printf '%sh' "$((delta / 3600))"
-    else
-        printf '%sd' "$((delta / 86400))"
-    fi
-}
-
 rows="$("$AMUX" list --json | jq -r '
   .records
   | to_entries
@@ -55,19 +38,37 @@ if [ -z "$rows" ]; then
     exit 0
 fi
 
-display_rows="$(
-    printf '%s\n' "$rows" |
-        while IFS=$'\t' read -r key agent status session pane updated reason cwd; do
-            case "$status" in
-                attention) icon="▲" ;;
-                running) icon="◐" ;;
-                done) icon="●" ;;
-                *) icon="·" ;;
-            esac
-            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-                "$key" "$icon" "$agent" "$session" "$pane" "$(age "$updated")" "$reason" "$cwd"
-        done
-)"
+display_rows="$("$AMUX" list --json | jq -r --argjson now "$(date +%s)" '
+  def age($updated):
+    ($now - $updated) as $delta
+    | if $delta < 60 then "\($delta)s"
+      elif $delta < 3600 then "\(($delta / 60) | floor)m"
+      elif $delta < 86400 then "\(($delta / 3600) | floor)h"
+      else "\(($delta / 86400) | floor)d"
+      end;
+  .records
+  | to_entries
+  | sort_by([(.value.attention | not), .value.updated_at])
+  | reverse
+  | .[]
+  | (.value.status // "unknown") as $status
+  | (if $status == "attention" then "▲"
+     elif $status == "running" then "◐"
+     elif $status == "done" then "●"
+     else "·"
+     end) as $icon
+  | [
+      .key,
+      $icon,
+      .value.agent,
+      (.value.tmux_session // ""),
+      (.value.tmux_pane // ""),
+      age(.value.updated_at),
+      (.value.reason // ""),
+      (.value.cwd // "")
+    ]
+  | @tsv
+')"
 
 if command -v fzf >/dev/null 2>&1 && [ "${AMUX_PLAIN:-0}" != "1" ]; then
     selected="$(

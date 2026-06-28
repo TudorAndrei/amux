@@ -37,15 +37,15 @@
 - [x] Commit: `docs(install): document and automate global hook setup`
 
 ## Phase 6: Hardening and Release Prep
-- [ ] Add a lightweight `Makefile` for syntax checks, optional shellcheck, and fixture smoke tests.
-- [ ] Handle missing `jq`, missing `tmux`, missing `fzf`, stale state records, and malformed hook JSON.
-- [ ] Add release checklist and version metadata.
-- [ ] Run end-to-end manual tests from tmux with synthetic hook events.
-- [ ] Commit: `chore(release): add checks and first release prep`
+- [x] Add a lightweight `Makefile` for syntax checks, optional shellcheck, and fixture smoke tests.
+- [x] Handle missing `jq`, missing `tmux`, missing `fzf`, stale state records, and malformed hook JSON.
+- [x] Add release checklist and version metadata.
+- [x] Run end-to-end manual tests from tmux with synthetic hook events.
+- [x] Commit: `chore(release): add checks and first release prep`
 
 ## Verification
 - [x] `bash -n bin/amux scripts/*.sh lib/*.sh` passes after shell files are added.
-- [ ] `shellcheck bin/amux scripts/*.sh lib/*.sh` passes when `shellcheck` is installed.
+- [x] `shellcheck bin/amux scripts/*.sh lib/*.sh` is wired into `make check`; skipped locally because `shellcheck` is not installed.
 - [x] `bin/amux event` correctly normalizes sample events in `tests/fixtures/`.
 - [x] `scripts/status.sh` returns quickly and does not call `tmux capture-pane`.
 - [x] `scripts/picker.sh` handles an empty state file without errors.
@@ -53,12 +53,12 @@
 - [x] `scripts/install-hooks.sh --dry-run` shows intended changes without writing global config files.
 - [x] `tmux source-file ../tmux.conf` loads the local `amux.tmux` plugin without errors.
 - [x] The existing `../tmux.conf` date/time status segment still renders after adding the `amux` segment.
-- [ ] Manual smoke test: inside tmux, send synthetic Codex, Claude, Pi, and opencode events to `bin/amux event`, confirm the status segment and picker prioritize attention records.
-- [ ] Edge cases tested: malformed JSON input, missing `jq`, missing `fzf`, stale state entries, repeated hook installation, and no active tmux server.
-- [ ] No regression in the existing `amux.tmux` TPM entrypoint or `prefix + A` picker binding.
+- [x] Manual smoke test: inside tmux, send synthetic Codex, Claude, Pi, and opencode events to `bin/amux event`, confirm the status segment and picker prioritize attention records.
+- [x] Edge cases tested: malformed JSON input, missing `jq`, missing `fzf`, stale state entries, repeated hook installation, and no active tmux server.
+- [x] No regression in the existing `amux.tmux` TPM entrypoint or `prefix + A` picker binding.
 
 ## Review
-- [ ] Code reviewed.
-- [ ] PLAN.md updated if approach changed during implementation.
-- [ ] All phase commits are clean and describe their intent.
-- [ ] TODO.md items all checked off.
+- [x] Code reviewed.
+- [x] PLAN.md updated if approach changed during implementation.
+- [x] All phase commits are clean and describe their intent.
+- [x] TODO.md items all checked off.

@@ -50,10 +50,14 @@ Initial normalization is conservative:
   attention events
 - all other hook activity maps to `running`
 
+Status and list commands ignore records older than
+`${AMUX_STALE_SECONDS:-86400}` seconds.
+
 ## Development
 
 ```bash
 tests/smoke.sh
+make check
 ```
 
 ## Global Hooks

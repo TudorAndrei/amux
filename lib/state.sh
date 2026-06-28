@@ -110,9 +110,12 @@ amux_records_jq() {
 }
 
 amux_list() {
-    amux_records_jq '
+    local cutoff
+    cutoff="$(($(amux_now) - $(amux_stale_seconds)))"
+    amux_state_json | jq -r --argjson cutoff "$cutoff" '
       .records
       | to_entries
+      | map(select((.value.updated_at // 0) >= $cutoff))
       | sort_by([(.value.attention | not), .value.agent, .value.updated_at])
       | reverse
       | .[]
@@ -122,8 +125,10 @@ amux_list() {
 }
 
 amux_status() {
-    amux_records_jq '
-      (.records | to_entries | map(.value)) as $records
+    local cutoff output
+    cutoff="$(($(amux_now) - $(amux_stale_seconds)))"
+    output="$(amux_state_json | jq -r --argjson cutoff "$cutoff" '
+      (.records | to_entries | map(.value) | map(select((.updated_at // 0) >= $cutoff))) as $records
       | ($records | map(select(.attention == true)) | length) as $attention
       | ($records | map(select(.status == "running")) | length) as $running
       | if $attention > 0 then "▲ \($attention)"
@@ -131,5 +136,6 @@ amux_status() {
         elif ($records | length) > 0 then "●"
         else ""
         end
-    '
+    ')"
+    [ -n "$output" ] && printf '%s' "$output"
 }
