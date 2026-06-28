@@ -55,3 +55,33 @@ Initial normalization is conservative:
 ```bash
 tests/smoke.sh
 ```
+
+## tmux
+
+Load the plugin directly:
+
+```tmux
+run-shell /path/to/amux/amux.tmux
+```
+
+Default bindings:
+
+| Binding | Action |
+| --- | --- |
+| `prefix + A` | Open the `amux` picker |
+
+Optional settings:
+
+```tmux
+set -g @amux-picker-key A
+set -g @amux-next-attention-key C-a
+set -g @amux-status on
+run-shell /path/to/amux/amux.tmux
+```
+
+`@amux-status on` prepends the compact `scripts/status.sh` segment to
+`status-right`. If you prefer manual control, leave it unset and add:
+
+```tmux
+#(/path/to/amux/scripts/status.sh)
+```

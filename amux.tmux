@@ -1,6 +1,25 @@
 #!/usr/bin/env bash
+set -e
+
 CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 tmux set-environment -g AMUX_ROOT "$CURRENT_DIR"
-tmux bind-key A display-popup -E "$CURRENT_DIR/scripts/picker.sh"
+tmux set-option -gq @amux-root "$CURRENT_DIR"
+tmux set-option -gq @amux-status-command "$CURRENT_DIR/scripts/status.sh"
 
+amux_key="$(tmux show-option -gqv @amux-picker-key)"
+amux_key="${amux_key:-A}"
+tmux bind-key "$amux_key" display-popup -E "$CURRENT_DIR/scripts/picker.sh"
+
+next_key="$(tmux show-option -gqv @amux-next-attention-key)"
+if [ -n "$next_key" ]; then
+    tmux bind-key "$next_key" run-shell "$CURRENT_DIR/scripts/next-attention.sh"
+fi
+
+if [ "$(tmux show-option -gqv @amux-status)" = "on" ]; then
+    status_right="$(tmux show-option -gqv status-right)"
+    case "$status_right" in
+        *"scripts/status.sh"*) ;;
+        *) tmux set-option -g status-right "#($CURRENT_DIR/scripts/status.sh) $status_right" ;;
+    esac
+fi

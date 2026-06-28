@@ -8,11 +8,11 @@
 - [x] Commit: `feat(core): add hook event sink and state store`
 
 ## Phase 2: tmux Plugin UI
-- [ ] Update `amux.tmux` to configure environment, key bindings, and optional status integration.
-- [ ] Replace `scripts/picker.sh` with a state-backed picker showing agent, session, status, reason, cwd, and age.
-- [ ] Add `scripts/status.sh` for a compact attention-first tmux status segment.
-- [ ] Add `scripts/next-attention.sh` to jump to the next tmux pane or session needing attention.
-- [ ] Commit: `feat(tmux): add status and attention picker`
+- [x] Update `amux.tmux` to configure environment, key bindings, and optional status integration.
+- [x] Replace `scripts/picker.sh` with a state-backed picker showing agent, session, status, reason, cwd, and age.
+- [x] Add `scripts/status.sh` for a compact attention-first tmux status segment.
+- [x] Add `scripts/next-attention.sh` to jump to the next tmux pane or session needing attention.
+- [x] Commit: `feat(tmux): add status and attention picker`
 
 ## Phase 3: Dotfiles tmux Installation
 - [ ] Update `../tmux.conf` to load `configs/tmux/amux/amux.tmux`.
