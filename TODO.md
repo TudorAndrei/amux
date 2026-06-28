@@ -48,7 +48,7 @@
 - [ ] `shellcheck bin/amux scripts/*.sh lib/*.sh` passes when `shellcheck` is installed.
 - [ ] `bin/amux event` correctly normalizes sample events in `tests/fixtures/`.
 - [ ] `scripts/status.sh` returns quickly and does not call `tmux capture-pane`.
-- [ ] `scripts/picker.sh` handles an empty state file without errors.
+- [x] `scripts/picker.sh` handles an empty state file without errors.
 - [ ] `scripts/next-attention.sh` handles missing tmux pane/session ids without switching to the wrong target.
 - [ ] `scripts/install-hooks.sh --dry-run` shows intended changes without writing global config files.
 - [ ] `tmux source-file ../tmux.conf` loads the local `amux.tmux` plugin without errors.

@@ -41,7 +41,17 @@ rows="$("$AMUX" list --json | jq -r '
 ')"
 
 if [ -z "$rows" ]; then
-    printf 'amux: no agent state yet\n'
+    if command -v fzf >/dev/null 2>&1 && [ "${AMUX_PLAIN:-0}" != "1" ]; then
+        printf 'No agent state yet\tStart Codex, Claude, Pi, or opencode with amux hooks installed\n' |
+            fzf --disabled --reverse \
+                --delimiter=$'\t' \
+                --with-nth=1,2 \
+                --header='amux   no tracked agents yet   press esc to close' >/dev/null || true
+    else
+        printf 'amux: no agent state yet\n\nPress any key to close.'
+        IFS= read -r -n 1 _ 2>/dev/null || true
+        printf '\n'
+    fi
     exit 0
 fi
 
@@ -59,7 +69,7 @@ display_rows="$(
         done
 )"
 
-if command -v fzf >/dev/null 2>&1 && [ -t 1 ]; then
+if command -v fzf >/dev/null 2>&1 && [ "${AMUX_PLAIN:-0}" != "1" ]; then
     selected="$(
         printf '%s\n' "$display_rows" |
             fzf --ansi --reverse \
@@ -67,7 +77,7 @@ if command -v fzf >/dev/null 2>&1 && [ -t 1 ]; then
                 --delimiter=$'\t' \
                 --header='amux   ▲ attention  ◐ running  ● done' \
                 --preview='printf "%s\n" {} | awk -F "\t" "{print \"agent: \" \$3 \"\nstatus: \" \$2 \" \" \$4 \"\nsession: \" \$5 \"\npane: \" \$6 \"\nage: \" \$7 \"\nreason: \" \$8 \"\ncwd: \" \$9}"'
-    )"
+    )" || exit 0
 else
     printf '%s\n' "$display_rows" | cut -f2-
     exit 0
@@ -85,4 +95,3 @@ fi
 if [ -n "$session" ]; then
     tmux switch-client -t "$session" 2>/dev/null || true
 fi
-
