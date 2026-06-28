@@ -138,4 +138,5 @@ amux_status() {
         end
     ')"
     [ -n "$output" ] && printf '%s' "$output"
+    return 0
 }
