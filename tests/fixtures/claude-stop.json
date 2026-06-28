@@ -1,0 +1,7 @@
+{
+  "hook_event_name": "Stop",
+  "session_id": "claude-session-1",
+  "cwd": "/tmp/amux-claude",
+  "reason": "turn complete"
+}
+

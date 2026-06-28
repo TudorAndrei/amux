@@ -1,0 +1,10 @@
+{
+  "event": {
+    "type": "session.idle",
+    "session": {
+      "id": "opencode-session-1"
+    }
+  },
+  "directory": "/tmp/amux-opencode"
+}
+

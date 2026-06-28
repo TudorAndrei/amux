@@ -9,3 +9,49 @@ Initial scope:
 - Surface agents that need user attention.
 - Provide tmux status and picker integrations.
 
+## State Model
+
+Agent hooks call:
+
+```bash
+amux event --agent codex --event PermissionRequest < hook-input.json
+```
+
+`amux` stores derived state in:
+
+```text
+${XDG_STATE_HOME:-$HOME/.local/state}/amux/state.json
+${XDG_STATE_HOME:-$HOME/.local/state}/amux/events.jsonl
+```
+
+The cached `state.json` is optimized for tmux status and picker rendering. The
+append-only `events.jsonl` file is for debugging hook input and normalization.
+
+Each state record contains:
+
+| Field | Meaning |
+| --- | --- |
+| `agent` | `codex`, `claude`, `pi`, or `opencode` |
+| `agent_session_id` | Agent session id when the hook exposes one |
+| `tmux_session` | tmux session name when the hook runs inside tmux |
+| `tmux_pane` | tmux pane id when available |
+| `cwd` | Working directory reported by the hook or current process |
+| `status` | `running`, `attention`, `done`, or `unknown` |
+| `attention` | Boolean flag for records that should be surfaced first |
+| `reason` | Short reason shown in tmux UI |
+| `last_event` | Last normalized hook event name |
+| `updated_at` | Unix timestamp for stale-record handling |
+
+Initial normalization is conservative:
+
+- permission, approval, notification, idle, ask, prompt, and waiting events set
+  `attention=true`
+- stop, end, idle, done, and complete events map to `done` unless they are also
+  attention events
+- all other hook activity maps to `running`
+
+## Development
+
+```bash
+tests/smoke.sh
+```
