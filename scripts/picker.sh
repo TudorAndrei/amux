@@ -79,7 +79,7 @@ if command -v fzf >/dev/null 2>&1 && [ "${AMUX_PLAIN:-0}" != "1" ]; then
             fzf --ansi --reverse \
                 --with-nth=4 \
                 --delimiter=$'\t' \
-                --nth=5 \
+                --nth=1 \
                 --header='amux   ▲ attention  ◐ running  ● done  ○ offline' \
                 --preview='printf "%s\n" {} | awk -F "\t" "{print \"session: \" \$1 \"\nrow: \" \$4 \"\npane: \" \$2 \"\ncwd: \" \$3}"'
     )" || exit 0
