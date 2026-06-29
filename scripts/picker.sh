@@ -51,7 +51,7 @@ display_rows="$("$AMUX" sessions --json | jq -r --argjson now "$(date +%s)" '
      elif $status == "running" then "◐"
      elif $status == "done" then "●"
      elif $status == "offline" then "○"
-     elif $status == "none" then " "
+     elif $status == "none" then "·"
      else "·"
      end) as $icon
   | [
