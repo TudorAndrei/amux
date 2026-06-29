@@ -66,7 +66,10 @@ amux_normalize_event() {
            end) as $attn
         | inferred_status($ev; $attn) as $st
         | {
-            key: ([$agent, raw_session, $tmux_session, $tmux_pane, raw_cwd] | map(select(. != "")) | join(":")),
+            key: (if raw_session != "" or $tmux_session != "" or $tmux_pane != ""
+                  then [$agent, raw_session, $tmux_session, $tmux_pane]
+                  else [$agent, raw_cwd]
+                  end | map(select(. != "")) | join(":")),
             agent: $agent,
             agent_session_id: raw_session,
             tmux_session: $tmux_session,
@@ -128,12 +131,27 @@ amux_status() {
     local cutoff output
     cutoff="$(($(amux_now) - $(amux_stale_seconds)))"
     output="$(amux_state_json | jq -r --argjson cutoff "$cutoff" '
-      (.records | to_entries | map(.value) | map(select((.updated_at // 0) >= $cutoff))) as $records
-      | ($records | map(select(.attention == true)) | length) as $attention
-      | ($records | map(select(.status == "running")) | length) as $running
+      def group_key:
+        if (.tmux_session // "") != "" then .tmux_session
+        elif (.cwd // "") != "" then .cwd
+        elif (.agent_session_id // "") != "" then .agent_session_id
+        else .agent
+        end;
+      (.records
+        | to_entries
+        | map(.value)
+        | map(select((.updated_at // 0) >= $cutoff))
+        | group_by(group_key)
+        | map({
+            attention: map(select(.attention == true)) | length,
+            running: map(select(.status == "running")) | length,
+            total: length
+          })) as $sessions
+      | ($sessions | map(select(.attention > 0)) | length) as $attention
+      | ($sessions | map(select(.attention == 0 and .running > 0)) | length) as $running
       | if $attention > 0 then "▲ \($attention)"
         elif $running > 0 then "◐ \($running)"
-        elif ($records | length) > 0 then "●"
+        elif ($sessions | length) > 0 then "●"
         else ""
         end
     ')"

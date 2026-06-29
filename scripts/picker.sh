@@ -5,20 +5,27 @@ AMUX_ROOT="${AMUX_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 AMUX="$AMUX_ROOT/bin/amux"
 
 rows="$("$AMUX" list --json | jq -r '
+  def group_key:
+    if (.tmux_session // "") != "" then .tmux_session
+    elif (.cwd // "") != "" then .cwd
+    elif (.agent_session_id // "") != "" then .agent_session_id
+    else .agent
+    end;
   .records
   | to_entries
-  | sort_by([(.value.attention | not), .value.updated_at])
-  | reverse
+  | map(.value)
+  | group_by(group_key)
+  | map(max_by(.updated_at))
+  | sort_by([(if .attention then 0 elif .status == "running" then 1 else 2 end), -(.updated_at // 0)])
   | .[]
   | [
-      .key,
-      .value.agent,
-      .value.status,
-      (.value.tmux_session // ""),
-      (.value.tmux_pane // ""),
-      (.value.updated_at | tostring),
-      (.value.reason // ""),
-      (.value.cwd // "")
+      (.tmux_session // .cwd // .agent_session_id // .agent),
+      (.status // ""),
+      (.tmux_session // ""),
+      (.tmux_pane // ""),
+      (.updated_at | tostring),
+      (.reason // ""),
+      (.cwd // "")
     ]
   | @tsv
 ')"
@@ -39,6 +46,18 @@ if [ -z "$rows" ]; then
 fi
 
 display_rows="$("$AMUX" list --json | jq -r --argjson now "$(date +%s)" '
+  def group_key:
+    if (.tmux_session // "") != "" then .tmux_session
+    elif (.cwd // "") != "" then .cwd
+    elif (.agent_session_id // "") != "" then .agent_session_id
+    else .agent
+    end;
+  def session_status:
+    if any(.attention == true) then "attention"
+    elif any(.status == "running") then "running"
+    elif length > 0 then "done"
+    else "unknown"
+    end;
   def age($updated):
     ($now - $updated) as $delta
     | if $delta < 60 then "\($delta)s"
@@ -48,24 +67,32 @@ display_rows="$("$AMUX" list --json | jq -r --argjson now "$(date +%s)" '
       end;
   .records
   | to_entries
-  | sort_by([(.value.attention | not), .value.updated_at])
-  | reverse
+  | map(.value)
+  | group_by(group_key)
+  | map(
+      . as $group
+      | ($group | session_status) as $status
+      | (if $status == "attention" then ($group | map(select(.attention == true)) | max_by(.updated_at))
+         elif $status == "running" then ($group | map(select(.status == "running")) | max_by(.updated_at))
+         else ($group | max_by(.updated_at))
+         end) + {session_status: $status}
+    )
+  | sort_by([(if .session_status == "attention" then 0 elif .session_status == "running" then 1 else 2 end), -(.updated_at // 0)])
   | .[]
-  | (.value.status // "unknown") as $status
+  | (.session_status // "unknown") as $status
   | (if $status == "attention" then "▲"
      elif $status == "running" then "◐"
      elif $status == "done" then "●"
      else "·"
      end) as $icon
   | [
-      .key,
+      (.tmux_session // .cwd // .agent_session_id // .agent),
       $icon,
-      .value.agent,
-      (.value.tmux_session // ""),
-      (.value.tmux_pane // ""),
-      age(.value.updated_at),
-      (.value.reason // ""),
-      (.value.cwd // "")
+      (.tmux_session // .cwd // .agent_session_id // .agent),
+      (.tmux_pane // ""),
+      age(.updated_at),
+      (.reason // ""),
+      (.cwd // "")
     ]
   | @tsv
 ')"
@@ -77,7 +104,7 @@ if command -v fzf >/dev/null 2>&1 && [ "${AMUX_PLAIN:-0}" != "1" ]; then
                 --with-nth=2.. \
                 --delimiter=$'\t' \
                 --header='amux   ▲ attention  ◐ running  ● done' \
-                --preview='printf "%s\n" {} | awk -F "\t" "{print \"agent: \" \$3 \"\nstatus: \" \$2 \" \" \$4 \"\nsession: \" \$5 \"\npane: \" \$6 \"\nage: \" \$7 \"\nreason: \" \$8 \"\ncwd: \" \$9}"'
+                --preview='printf "%s\n" {} | awk -F "\t" "{print \"session: \" \$3 \"\nstatus: \" \$2 \"\npane: \" \$4 \"\nage: \" \$5 \"\nreason: \" \$6 \"\ncwd: \" \$7}"'
     )" || exit 0
 else
     printf '%s\n' "$display_rows" | cut -f2-
@@ -86,8 +113,8 @@ fi
 
 [ -n "${selected:-}" ] || exit 0
 
-session="$(printf '%s' "$selected" | cut -f4)"
-pane="$(printf '%s' "$selected" | cut -f5)"
+session="$(printf '%s' "$selected" | cut -f3)"
+pane="$(printf '%s' "$selected" | cut -f4)"
 
 if [ -n "$pane" ]; then
     tmux select-pane -t "$pane" 2>/dev/null || true
