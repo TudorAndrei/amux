@@ -96,6 +96,8 @@ Optional settings:
 
 ```tmux
 set -g @amux-picker-key A
+set -g @amux-popup-width 90%
+set -g @amux-popup-height 80%
 set -g @amux-next-attention-key C-a
 set -g @amux-status on
 run-shell /path/to/amux/amux.tmux

@@ -66,17 +66,24 @@ display_rows="$("$AMUX" sessions --json | jq -r --argjson now "$(date +%s)" '
   | @tsv
 ')"
 
+display_rows="$(
+    printf '%s\n' "$display_rows" |
+        awk -F '\t' '{
+            printf "%s\t%s\t%s\t%-2s %-34.34s %5s  %.90s\n", $1, $2, $3, $4, $5, $6, $7
+        }'
+)"
+
 if command -v fzf >/dev/null 2>&1 && [ "${AMUX_PLAIN:-0}" != "1" ]; then
     selected="$(
         printf '%s\n' "$display_rows" |
             fzf --ansi --reverse \
-                --with-nth=4.. \
+                --with-nth=4 \
                 --delimiter=$'\t' \
                 --header='amux   ▲ attention  ◐ running  ● done  ○ offline' \
-                --preview='printf "%s\n" {} | awk -F "\t" "{print \"session: \" \$5 \"\nstatus: \" \$4 \"\nage: \" \$6 \"\nreason: \" \$7 \"\npane: \" \$2 \"\ncwd: \" \$3}"'
+                --preview='printf "%s\n" {} | awk -F "\t" "{print \"session: \" \$1 \"\nrow: \" \$4 \"\npane: \" \$2 \"\ncwd: \" \$3}"'
     )" || exit 0
 else
-    printf '%s\n' "$display_rows" | cut -f4-
+    printf '%s\n' "$display_rows" | cut -f4
     exit 0
 fi
 
