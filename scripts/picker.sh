@@ -40,6 +40,9 @@ display_rows="$("$AMUX" sessions --json | jq -r --argjson now "$(date +%s)" '
       elif $delta < 86400 then "\(($delta / 3600) | floor)h"
       else "\(($delta / 86400) | floor)d"
       end;
+  def clean_reason:
+    (.reason // "") as $reason
+    | if $reason == (.session // "") then "" else $reason end;
   .
   | sort_by([(if .status == "attention" then 0 elif .status == "running" then 1 elif .status == "offline" then 2 else 3 end), -(.last_attached // 0)])
   | .[]
@@ -53,12 +56,12 @@ display_rows="$("$AMUX" sessions --json | jq -r --argjson now "$(date +%s)" '
      end) as $icon
   | [
       .session,
+      (.pane // ""),
+      (.cwd // ""),
       $icon,
       .session,
-      (.pane // ""),
       age(.last_attached),
-      (.reason // ""),
-      (.cwd // "")
+      clean_reason
     ]
   | @tsv
 ')"
@@ -67,20 +70,20 @@ if command -v fzf >/dev/null 2>&1 && [ "${AMUX_PLAIN:-0}" != "1" ]; then
     selected="$(
         printf '%s\n' "$display_rows" |
             fzf --ansi --reverse \
-                --with-nth=2.. \
+                --with-nth=4.. \
                 --delimiter=$'\t' \
                 --header='amux   ▲ attention  ◐ running  ● done  ○ offline' \
-                --preview='printf "%s\n" {} | awk -F "\t" "{print \"session: \" \$3 \"\nstatus: \" \$2 \"\npane: \" \$4 \"\nage: \" \$5 \"\nreason: \" \$6 \"\ncwd: \" \$7}"'
+                --preview='printf "%s\n" {} | awk -F "\t" "{print \"session: \" \$5 \"\nstatus: \" \$4 \"\nage: \" \$6 \"\nreason: \" \$7 \"\npane: \" \$2 \"\ncwd: \" \$3}"'
     )" || exit 0
 else
-    printf '%s\n' "$display_rows" | cut -f2-
+    printf '%s\n' "$display_rows" | cut -f4-
     exit 0
 fi
 
 [ -n "${selected:-}" ] || exit 0
 
-session="$(printf '%s' "$selected" | cut -f2)"
-pane="$(printf '%s' "$selected" | cut -f3)"
+session="$(printf '%s' "$selected" | cut -f1)"
+pane="$(printf '%s' "$selected" | cut -f2)"
 
 if [ -n "$pane" ]; then
     tmux select-pane -t "$pane" 2>/dev/null || true
