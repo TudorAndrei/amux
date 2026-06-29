@@ -127,31 +127,142 @@ amux_list() {
     '
 }
 
+amux_sessions() {
+    local cutoff state sessions panes
+    cutoff="$(($(amux_now) - $(amux_stale_seconds)))"
+    state="$(amux_state_json)"
+    sessions="$(
+        if command -v tmux >/dev/null 2>&1; then
+            tmux list-sessions -F '#{session_last_attached}|#{?session_attached,,#{session_name}}|#{session_attached}' 2>/dev/null || true
+        fi
+    )"
+    panes="$(
+        if command -v tmux >/dev/null 2>&1; then
+            tmux list-panes -a -F '#{session_name}|#{pane_id}|#{pane_current_command}|#{pane_pid}|#{pane_title}' 2>/dev/null || true
+        fi
+    )"
+
+    jq -n \
+        --argjson state "$state" \
+        --arg sessions "$sessions" \
+        --arg panes "$panes" \
+        --argjson cutoff "$cutoff" '
+        def session_rows:
+          $sessions
+          | split("\n")
+          | map(select(length > 0))
+          | map(split("|") as $p | {
+              session: $p[1],
+              last_attached: (($p[0] // "0") | tonumber),
+              attached: (($p[2] // "0") == "1")
+            })
+          | map(select(.session != ""));
+
+        def pane_rows:
+          $panes
+          | split("\n")
+          | map(select(length > 0))
+          | map(split("|") as $p | {
+              session: $p[0],
+              pane: $p[1],
+              command: $p[2],
+              pid: $p[3],
+              title: $p[4]
+            });
+
+        def is_agent:
+          (.command // "") as $cmd
+          | ($cmd | test("^(claude|codex.*|pi|opencode)$"));
+
+        def agent_name:
+          (.command // "") as $cmd
+          | if $cmd | test("^codex") then "codex"
+            elif $cmd == "claude" then "claude"
+            elif $cmd == "pi" then "pi"
+            elif $cmd == "opencode" then "opencode"
+            else $cmd
+            end;
+
+        def hook_records:
+          $state.records
+          | to_entries
+          | map(.value)
+          | map(select((.updated_at // 0) >= $cutoff));
+
+        def rank($status):
+          if $status == "attention" then 3
+          elif $status == "running" then 2
+          elif $status == "done" then 1
+          elif $status == "offline" then 0
+          else -1
+          end;
+
+        def record_group_key:
+          if (.tmux_session // "") != "" then .tmux_session
+          elif (.cwd // "") != "" then .cwd
+          elif (.agent_session_id // "") != "" then .agent_session_id
+          else .agent
+          end;
+
+        hook_records as $records
+        | session_rows as $tmux_sessions
+        | pane_rows as $panes
+        | ($records
+            | map(select((.tmux_session // "") == ""))
+            | map({
+                session: record_group_key,
+                last_attached: (.updated_at // 0),
+                attached: false
+              })) as $record_sessions
+        | (($tmux_sessions + $record_sessions) | unique_by(.session)) as $sessions
+        | ($panes | map(select(is_agent))) as $agent_panes
+        | ($agent_panes | map(.pane)) as $live_panes
+        | $sessions
+        | map(. as $session
+          | ($agent_panes | map(select(.session == $session.session))) as $session_agent_panes
+          | ($records | map(select(record_group_key == $session.session))) as $session_records
+          | ($session_records
+              | map(if (.tmux_pane // "") != "" and ((.tmux_pane as $pane | $live_panes | index($pane)) | not)
+                    then . + {derived_status: "offline"}
+                    else . + {derived_status: .status}
+                    end)) as $derived_records
+          | ($derived_records | map(select(.attention == true)) | length) as $attention_count
+          | ($derived_records | map(select(.derived_status == "running")) | length) as $running_count
+          | ($derived_records | map(select(.derived_status == "done")) | length) as $done_count
+          | ($derived_records | map(select(.derived_status == "offline")) | length) as $offline_count
+          | ($session_agent_panes | length) as $live_count
+          | (if $attention_count > 0 then "attention"
+             elif $running_count > 0 or $live_count > 0 then "running"
+             elif $done_count > 0 then "done"
+             elif $offline_count > 0 then "offline"
+             else "none"
+             end) as $status
+          | ($derived_records | sort_by(.updated_at // 0) | reverse | .[0]) as $latest_record
+          | ($session_agent_panes | .[0]) as $first_live
+          | $session + {
+              status: $status,
+              attention: ($status == "attention"),
+              agent_count: $live_count,
+              pane: (($first_live.pane // $latest_record.tmux_pane) // ""),
+              reason: (if $status == "offline" then "offline" else (($latest_record.reason // $first_live.title) // "") end),
+              cwd: (($latest_record.cwd // "") ),
+              updated_at: (($latest_record.updated_at // .last_attached) | tonumber)
+            })
+        | sort_by([(.status != "attention"), (.status != "running"), -(.last_attached // 0)])
+    '
+}
+
 amux_status() {
     local cutoff output
     cutoff="$(($(amux_now) - $(amux_stale_seconds)))"
-    output="$(amux_state_json | jq -r --argjson cutoff "$cutoff" '
-      def group_key:
-        if (.tmux_session // "") != "" then .tmux_session
-        elif (.cwd // "") != "" then .cwd
-        elif (.agent_session_id // "") != "" then .agent_session_id
-        else .agent
-        end;
-      (.records
-        | to_entries
-        | map(.value)
-        | map(select((.updated_at // 0) >= $cutoff))
-        | group_by(group_key)
-        | map({
-            attention: map(select(.attention == true)) | length,
-            running: map(select(.status == "running")) | length,
-            total: length
-          })) as $sessions
-      | ($sessions | map(select(.attention > 0)) | length) as $attention
-      | ($sessions | map(select(.attention == 0 and .running > 0)) | length) as $running
+    output="$(amux_sessions | jq -r '
+      (map(select(.status == "attention")) | length) as $attention
+      | (map(select(.status == "running")) | length) as $running
+      | (map(select(.status == "offline")) | length) as $offline
       | if $attention > 0 then "▲ \($attention)"
         elif $running > 0 then "◐ \($running)"
-        elif ($sessions | length) > 0 then "●"
+        elif $offline > 0 then "○ \($offline)"
+        elif length > 0 then "●"
         else ""
         end
     ')"

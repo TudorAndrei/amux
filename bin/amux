@@ -16,6 +16,8 @@ Commands:
       Read raw hook JSON from stdin, normalize it, and update amux state.
   status
       Print a compact tmux status segment.
+  sessions [--json]
+      Print all tmux sessions with amux status.
   list [--json]
       Print tracked agent records.
   clear
@@ -91,6 +93,21 @@ cmd_list() {
     esac
 }
 
+cmd_sessions() {
+    amux_need_jq
+    case "${1:-}" in
+        --json)
+            amux_sessions
+            ;;
+        "" )
+            amux_sessions | jq -r '.[] | [.status, .session, (.pane // "-"), (.reason // "-"), (.cwd // "-")] | @tsv'
+            ;;
+        * )
+            amux_die "unknown sessions option: $1"
+            ;;
+    esac
+}
+
 cmd_clear() {
     rm -f "$(amux_state_file)" "$(amux_events_file)"
 }
@@ -138,6 +155,7 @@ main() {
     case "$command" in
         event) cmd_event "$@" ;;
         status) cmd_status "$@" ;;
+        sessions) cmd_sessions "$@" ;;
         list) cmd_list "$@" ;;
         clear) cmd_clear "$@" ;;
         doctor) cmd_doctor "$@" ;;
@@ -147,4 +165,3 @@ main() {
 }
 
 main "$@"
-
