@@ -80,7 +80,16 @@ assets live under `hooks/` and are rendered with the absolute path to
 
 ## tmux
 
-Load the plugin directly:
+Install with TPM:
+
+```tmux
+set -g @plugin 'TudorAndrei/amux'
+set -g @amux-status on
+```
+
+Then reload tmux and run TPM install (`prefix + I`).
+
+Load the plugin directly for local development:
 
 ```tmux
 run-shell /path/to/amux/amux.tmux
@@ -100,7 +109,6 @@ set -g @amux-popup-width 90%
 set -g @amux-popup-height 80%
 set -g @amux-next-attention-key C-a
 set -g @amux-status on
-run-shell /path/to/amux/amux.tmux
 ```
 
 `@amux-status on` prepends the compact `scripts/status.sh` segment to
