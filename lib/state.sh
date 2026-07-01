@@ -90,19 +90,21 @@ amux_normalize_event() {
 
 amux_write_event() {
     local agent="$1" event="$2" status="$3" attention="$4" reason="$5" raw="$6"
-    local state_file events_file tmp record
+    local state_file events_file tmp record cutoff
 
     amux_mkdir_state
     state_file="$(amux_state_file)"
     events_file="$(amux_events_file)"
     record="$(amux_normalize_event "$agent" "$event" "$status" "$attention" "$reason" "$raw")"
+    cutoff="$(($(amux_now) - $(amux_stale_seconds)))"
 
     printf '%s\n' "$record" >> "$events_file"
     tmp="${state_file}.$$"
     amux_state_json |
-        jq --argjson record "$record" '
+        jq --argjson record "$record" --argjson cutoff "$cutoff" '
           .version = 1
           | .records[$record.key] = ($record | del(.key))
+          | .records |= with_entries(select((.value.updated_at // 0) >= $cutoff))
         ' > "$tmp"
     mv "$tmp" "$state_file"
 }
@@ -143,11 +145,12 @@ amux_sessions() {
     )"
 
     jq -n \
-        --argjson state "$state" \
+        --slurpfile state <(printf '%s' "$state") \
         --arg sessions "$sessions" \
         --arg panes "$panes" \
         --argjson cutoff "$cutoff" '
-        def session_rows:
+        $state[0] as $state
+        | def session_rows:
           $sessions
           | split("\n")
           | map(select(length > 0))
