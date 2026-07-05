@@ -130,8 +130,9 @@ amux_list() {
 }
 
 amux_sessions() {
-    local cutoff state sessions panes
+    local cutoff hide_subagents state sessions panes
     cutoff="$(($(amux_now) - $(amux_stale_seconds)))"
+    hide_subagents="$(amux_hide_subagents)"
     state="$(amux_state_json)"
     sessions="$(
         if command -v tmux >/dev/null 2>&1; then
@@ -148,9 +149,36 @@ amux_sessions() {
         --slurpfile state <(printf '%s' "$state") \
         --arg sessions "$sessions" \
         --arg panes "$panes" \
-        --argjson cutoff "$cutoff" '
+        --argjson cutoff "$cutoff" \
+        --argjson hide_subagents "$hide_subagents" '
         $state[0] as $state
-        | def session_rows:
+        |
+        def uuid_like:
+          test("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");
+
+        def subagent_session:
+          if $hide_subagents then
+            ((.session // "") | uuid_like)
+          else
+            false
+          end;
+
+        def subagent_record:
+          if $hide_subagents then
+            (((.tmux_session // "") | uuid_like)
+              or ((.raw.agent_id // "") != "")
+              or ((.raw.agent_type // "") != "")
+              or ((.raw.parent_agent_id // "") != "")
+              or ((.raw.parent_session_id // "") != "")
+              or (.raw.is_subagent == true)
+              or (((.tmux_session // "") == "")
+                and ((.cwd // "") == "")
+                and ((.agent_session_id // "") | uuid_like)))
+          else
+            false
+          end;
+
+        def session_rows:
           $sessions
           | split("\n")
           | map(select(length > 0))
@@ -159,7 +187,8 @@ amux_sessions() {
               last_attached: (($p[0] // "0") | tonumber),
               attached: (($p[2] // "0") == "1")
             })
-          | map(select(.session != ""));
+          | map(select(.session != ""))
+          | map(select(subagent_session | not));
 
         def pane_rows:
           $panes
@@ -190,7 +219,8 @@ amux_sessions() {
           $state.records
           | to_entries
           | map(.value)
-          | map(select((.updated_at // 0) >= $cutoff));
+          | map(select((.updated_at // 0) >= $cutoff))
+          | map(select(subagent_record | not));
 
         def rank($status):
           if $status == "attention" then 3

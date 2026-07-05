@@ -1,0 +1,9 @@
+{
+  "session_id": "70309dc1-b9b2-4826-99d8-6d3ff79d2c83",
+  "turn_id": "codex-turn-2",
+  "transcript_path": "/tmp/amux-subagent-empty-cwd.jsonl",
+  "cwd": "",
+  "hook_event_name": "PostToolUse",
+  "model": "gpt-5.5",
+  "permission_mode": "default"
+}

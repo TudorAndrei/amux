@@ -1,0 +1,11 @@
+{
+  "session_id": "codex-subagent-session-1",
+  "turn_id": "codex-turn-1",
+  "agent_id": "codex-subagent-1",
+  "agent_type": "explorer",
+  "transcript_path": "/tmp/amux-subagent.jsonl",
+  "cwd": "/tmp/amux-subagent-project",
+  "hook_event_name": "PostToolUse",
+  "model": "gpt-5.5",
+  "permission_mode": "default"
+}

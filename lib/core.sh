@@ -31,6 +31,17 @@ amux_stale_seconds() {
     printf '%s\n' "${AMUX_STALE_SECONDS:-86400}"
 }
 
+amux_hide_subagents() {
+    case "${AMUX_HIDE_SUBAGENTS:-1}" in
+        0|false|FALSE|no|NO|off|OFF)
+            printf 'false\n'
+            ;;
+        *)
+            printf 'true\n'
+            ;;
+    esac
+}
+
 amux_now() {
     date +%s
 }

@@ -53,6 +53,12 @@ Initial normalization is conservative:
 Status and list commands ignore records older than
 `${AMUX_STALE_SECONDS:-86400}` seconds.
 
+Session views hide spawned subagents by default. `amux sessions`, the picker,
+and the tmux status segment ignore hook records with subagent metadata such as
+`agent_id` or `agent_type`, ignore UUID-only records without a cwd or tmux
+target, and ignore UUID-named tmux sessions commonly used for spawned workers.
+Set `AMUX_HIDE_SUBAGENTS=0` to show them again.
+
 ## Development
 
 ```bash
