@@ -253,7 +253,7 @@ amux_sessions() {
                     then . + {derived_status: "offline"}
                     else . + {derived_status: .status}
                     end)) as $derived_records
-          | ($derived_records | map(select(.attention == true)) | length) as $attention_count
+          | ($derived_records | map(select(.derived_status == "attention")) | length) as $attention_count
           | ($derived_records | map(select(.derived_status == "running")) | length) as $running_count
           | ($derived_records | map(select(.derived_status == "done")) | length) as $done_count
           | ($derived_records | map(select(.derived_status == "offline")) | length) as $offline_count

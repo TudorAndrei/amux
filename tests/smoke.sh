@@ -26,4 +26,38 @@ AMUX_HIDE_SUBAGENTS=0 "$ROOT/bin/amux" sessions --json | jq -e 'all(.session != 
 AMUX_HIDE_SUBAGENTS=0 "$ROOT/bin/amux" sessions --json | jq -e 'all(.session != "70309dc1-b9b2-4826-99d8-6d3ff79d2c83")' >/dev/null
 test -z "$(AMUX_COLOR=0 "$ROOT/bin/amux" status)"
 
+FAKE_BIN="$AMUX_STATE_DIR/bin"
+mkdir -p "$FAKE_BIN"
+cat > "$FAKE_BIN/tmux" <<'SH'
+#!/usr/bin/env bash
+case "$1" in
+    display-message)
+        case "${3:-}" in
+            '#{session_name}') printf 'codex-tmux\n' ;;
+            '#{window_id}') printf '@1\n' ;;
+            '#{pane_id}') printf '%%1\n' ;;
+        esac
+        ;;
+    list-sessions)
+        printf '100|codex-tmux|0\n'
+        ;;
+    list-panes)
+        printf 'codex-tmux|%%2|zsh|200|shell\n'
+        ;;
+esac
+SH
+chmod +x "$FAKE_BIN/tmux"
+
+export PATH="$FAKE_BIN:$PATH"
+export TMUX="fake"
+"$ROOT/bin/amux" event --agent codex < "$ROOT/tests/fixtures/codex-permission.json"
+unset TMUX
+"$ROOT/bin/amux" event --agent claude < "$ROOT/tests/fixtures/claude-stop.json"
+
+sessions="$("$ROOT/bin/amux" sessions --json)"
+printf '%s\n' "$sessions" | jq -e 'length == 1' >/dev/null
+printf '%s\n' "$sessions" | jq -e '.[0].session == "codex-tmux"' >/dev/null
+printf '%s\n' "$sessions" | jq -e '.[0].status == "offline"' >/dev/null
+printf '%s\n' "$sessions" | jq -e 'all(.session != "/tmp/amux-claude")' >/dev/null
+
 printf 'ok\n'
