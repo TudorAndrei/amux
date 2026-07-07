@@ -42,7 +42,11 @@ case "$1" in
         printf '100|codex-tmux|0\n'
         ;;
     list-panes)
-        printf 'codex-tmux|%%2|zsh|200|shell\n'
+        if [ "${AMUX_FAKE_AGENT_LIVE:-0}" = "1" ]; then
+            printf 'codex-tmux|%%1|codex|200|codex\n'
+        else
+            printf 'codex-tmux|%%2|zsh|200|shell\n'
+        fi
         ;;
 esac
 SH
@@ -59,5 +63,14 @@ printf '%s\n' "$sessions" | jq -e 'length == 1' >/dev/null
 printf '%s\n' "$sessions" | jq -e '.[0].session == "codex-tmux"' >/dev/null
 printf '%s\n' "$sessions" | jq -e '.[0].status == "offline"' >/dev/null
 printf '%s\n' "$sessions" | jq -e 'all(.session != "/tmp/amux-claude")' >/dev/null
+
+export TMUX="fake"
+AMUX_FAKE_AGENT_LIVE=1 "$ROOT/bin/amux" event --agent codex --event Stop < "$ROOT/tests/fixtures/codex-permission.json"
+unset TMUX
+
+sessions="$(AMUX_FAKE_AGENT_LIVE=1 "$ROOT/bin/amux" sessions --json)"
+printf '%s\n' "$sessions" | jq -e 'length == 1' >/dev/null
+printf '%s\n' "$sessions" | jq -e '.[0].session == "codex-tmux"' >/dev/null
+printf '%s\n' "$sessions" | jq -e '.[0].status == "done"' >/dev/null
 
 printf 'ok\n'

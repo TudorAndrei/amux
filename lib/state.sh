@@ -259,8 +259,9 @@ amux_sessions() {
           | ($derived_records | map(select(.derived_status == "offline")) | length) as $offline_count
           | ($session_agent_panes | length) as $live_count
           | (if $attention_count > 0 then "attention"
-             elif $running_count > 0 or $live_count > 0 then "running"
+             elif $running_count > 0 then "running"
              elif $done_count > 0 then "done"
+             elif $live_count > 0 then "running"
              elif $offline_count > 0 then "offline"
              else "none"
              end) as $status
