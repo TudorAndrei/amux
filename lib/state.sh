@@ -289,13 +289,20 @@ amux_status() {
     local cutoff output
     cutoff="$(($(amux_now) - $(amux_stale_seconds)))"
     output="$(amux_sessions | jq -r '
+      def tmux_color($use_color; $style; $text):
+        if $use_color then "#[\($style)]\($text)#[default]" else $text end;
+
       (map(select(.status == "attention")) | length) as $attention
       | (map(select(.status == "running")) | length) as $running
       | (map(select(.status == "offline")) | length) as $offline
-      | if $attention > 0 then "▲ \($attention)"
-        elif $running > 0 then "◐ \($running)"
-        elif $offline > 0 then "○ \($offline)"
-        elif length > 0 then "●"
+      | (env.AMUX_COLOR // "1") as $color
+      | (env.AMUX_PLAIN // "0") as $plain
+      | (env.NO_COLOR // "") as $no_color
+      | ($color != "0" and $plain != "1" and $no_color == "") as $use_color
+      | if $attention > 0 then "\(tmux_color($use_color; "fg=red,bold"; "▲")) \($attention)"
+        elif $running > 0 then "\(tmux_color($use_color; "fg=yellow"; "◐")) \($running)"
+        elif $offline > 0 then "\(tmux_color($use_color; "fg=colour244"; "○")) \($offline)"
+        elif length > 0 then tmux_color($use_color; "fg=green"; "●")
         else ""
         end
     ')"

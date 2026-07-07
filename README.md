@@ -123,3 +123,14 @@ set -g @amux-status on
 ```tmux
 #(/path/to/amux/scripts/status.sh)
 ```
+
+Status indicators are colored by default in tmux and in the picker:
+
+| Status | Indicator |
+| --- | --- |
+| `attention` | red `▲` |
+| `running` | yellow `◐` |
+| `done` | green `●` |
+| `offline` | gray `○` |
+
+Set `AMUX_COLOR=0`, `AMUX_PLAIN=1`, or `NO_COLOR=1` to use monochrome output.
