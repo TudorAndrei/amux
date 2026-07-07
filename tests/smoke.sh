@@ -22,8 +22,8 @@ printf '%s\n' "$state" | jq -e '[.records[].attention] | any' >/dev/null
 printf '%s\n' "$state" | jq -e '[.records[].agent] | sort == ["claude","codex","codex","codex","opencode","pi"]' >/dev/null
 "$ROOT/bin/amux" sessions --json | jq -e 'all(.session != "/tmp/amux-subagent-project")' >/dev/null
 "$ROOT/bin/amux" sessions --json | jq -e 'all(.session != "70309dc1-b9b2-4826-99d8-6d3ff79d2c83")' >/dev/null
-AMUX_HIDE_SUBAGENTS=0 "$ROOT/bin/amux" sessions --json | jq -e 'any(.session == "/tmp/amux-subagent-project")' >/dev/null
-AMUX_HIDE_SUBAGENTS=0 "$ROOT/bin/amux" sessions --json | jq -e 'any(.session == "70309dc1-b9b2-4826-99d8-6d3ff79d2c83")' >/dev/null
-test "$(AMUX_COLOR=0 "$ROOT/bin/amux" status)" = "▲ 2"
+AMUX_HIDE_SUBAGENTS=0 "$ROOT/bin/amux" sessions --json | jq -e 'all(.session != "/tmp/amux-subagent-project")' >/dev/null
+AMUX_HIDE_SUBAGENTS=0 "$ROOT/bin/amux" sessions --json | jq -e 'all(.session != "70309dc1-b9b2-4826-99d8-6d3ff79d2c83")' >/dev/null
+test -z "$(AMUX_COLOR=0 "$ROOT/bin/amux" status)"
 
 printf 'ok\n'

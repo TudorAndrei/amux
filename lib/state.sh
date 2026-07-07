@@ -220,6 +220,7 @@ amux_sessions() {
           | to_entries
           | map(.value)
           | map(select((.updated_at // 0) >= $cutoff))
+          | map(select((.tmux_session // "") != ""))
           | map(select(subagent_record | not));
 
         def rank($status):
@@ -240,14 +241,7 @@ amux_sessions() {
         hook_records as $records
         | session_rows as $tmux_sessions
         | pane_rows as $panes
-        | ($records
-            | map(select((.tmux_session // "") == ""))
-            | map({
-                session: record_group_key,
-                last_attached: (.updated_at // 0),
-                attached: false
-              })) as $record_sessions
-        | (($tmux_sessions + $record_sessions) | unique_by(.session)) as $sessions
+        | $tmux_sessions as $sessions
         | ($panes | map(select(is_agent))) as $agent_panes
         | ($agent_panes | map(.pane)) as $live_panes
         | $sessions
