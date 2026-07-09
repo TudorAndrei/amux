@@ -33,19 +33,25 @@ cat > "$FAKE_BIN/tmux" <<'SH'
 case "$1" in
     display-message)
         case "${3:-}" in
-            '#{session_name}') printf 'codex-tmux\n' ;;
+            '#{session_name}') printf '%s\n' "${AMUX_FAKE_SESSION:-codex-tmux}" ;;
             '#{window_id}') printf '@1\n' ;;
-            '#{pane_id}') printf '%%1\n' ;;
+            '#{pane_id}') printf '%s\n' "${AMUX_FAKE_PANE:-%1}" ;;
         esac
         ;;
     list-sessions)
         printf '100|codex-tmux|0\n'
+        if [ "${AMUX_FAKE_EXTRA_SESSION:-0}" = "1" ]; then
+            printf '50|codex-offline|0\n'
+        fi
         ;;
     list-panes)
         if [ "${AMUX_FAKE_AGENT_LIVE:-0}" = "1" ]; then
             printf 'codex-tmux|%%1|codex|200|codex\n'
         else
             printf 'codex-tmux|%%2|zsh|200|shell\n'
+        fi
+        if [ "${AMUX_FAKE_EXTRA_SESSION:-0}" = "1" ]; then
+            printf 'codex-offline|%%4|zsh|201|shell\n'
         fi
         ;;
 esac
@@ -72,5 +78,16 @@ sessions="$(AMUX_FAKE_AGENT_LIVE=1 "$ROOT/bin/amux" sessions --json)"
 printf '%s\n' "$sessions" | jq -e 'length == 1' >/dev/null
 printf '%s\n' "$sessions" | jq -e '.[0].session == "codex-tmux"' >/dev/null
 printf '%s\n' "$sessions" | jq -e '.[0].status == "done"' >/dev/null
+
+export TMUX="fake"
+AMUX_FAKE_SESSION=codex-offline AMUX_FAKE_PANE=%3 "$ROOT/bin/amux" event --agent codex < "$ROOT/tests/fixtures/codex-permission.json"
+unset TMUX
+
+sessions="$(AMUX_FAKE_AGENT_LIVE=1 AMUX_FAKE_EXTRA_SESSION=1 "$ROOT/bin/amux" sessions --json)"
+printf '%s\n' "$sessions" | jq -e 'length == 2' >/dev/null
+printf '%s\n' "$sessions" | jq -e '.[0].session == "codex-tmux"' >/dev/null
+printf '%s\n' "$sessions" | jq -e '.[0].status == "done"' >/dev/null
+printf '%s\n' "$sessions" | jq -e '.[1].session == "codex-offline"' >/dev/null
+printf '%s\n' "$sessions" | jq -e '.[1].status == "offline"' >/dev/null
 
 printf 'ok\n'

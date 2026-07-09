@@ -276,7 +276,7 @@ amux_sessions() {
               cwd: (($latest_record.cwd // "") ),
               updated_at: (($latest_record.updated_at // .last_attached) | tonumber)
             })
-        | sort_by([(.status != "attention"), (.status != "running"), -(.last_attached // 0)])
+        | sort_by([-(rank(.status)), -(.last_attached // 0)])
     '
 }
 

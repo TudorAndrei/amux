@@ -49,7 +49,7 @@ display_rows="$("$AMUX" sessions --json | jq -r --argjson now "$(date +%s)" '
     (.reason // "") as $reason
     | if $reason == (.session // "") then "" else $reason end;
   .
-  | sort_by([(if .status == "attention" then 0 elif .status == "running" then 1 elif .status == "offline" then 2 else 3 end), -(.last_attached // 0)])
+  | sort_by([(if .status == "attention" then 0 elif .status == "running" then 1 elif .status == "done" then 2 elif .status == "offline" then 3 else 4 end), -(.last_attached // 0)])
   | .[]
   | (.status // "none") as $status
   | (if $status == "attention" then "▲"
