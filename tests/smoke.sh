@@ -39,13 +39,25 @@ case "$1" in
         esac
         ;;
     list-sessions)
-        printf '100|codex-tmux|0\n'
+        if [ "${AMUX_FAKE_STATUS_SESSIONS:-0}" = "1" ]; then
+            printf '400|attention-session|0\n'
+            printf '300|done-session|0\n'
+            printf '200|running-session|0\n'
+            printf '100|offline-session|0\n'
+        else
+            printf '100|codex-tmux|0\n'
+        fi
         if [ "${AMUX_FAKE_EXTRA_SESSION:-0}" = "1" ]; then
             printf '50|codex-offline|0\n'
         fi
         ;;
     list-panes)
-        if [ "${AMUX_FAKE_AGENT_LIVE:-0}" = "1" ]; then
+        if [ "${AMUX_FAKE_STATUS_SESSIONS:-0}" = "1" ]; then
+            printf 'attention-session|%%10|codex|400|codex\n'
+            printf 'done-session|%%11|codex|300|codex\n'
+            printf 'running-session|%%12|codex|200|codex\n'
+            printf 'offline-session|%%13|zsh|100|shell\n'
+        elif [ "${AMUX_FAKE_AGENT_LIVE:-0}" = "1" ]; then
             printf 'codex-tmux|%%1|codex|200|codex\n'
         else
             printf 'codex-tmux|%%2|zsh|200|shell\n'
@@ -89,5 +101,15 @@ printf '%s\n' "$sessions" | jq -e '.[0].session == "codex-tmux"' >/dev/null
 printf '%s\n' "$sessions" | jq -e '.[0].status == "done"' >/dev/null
 printf '%s\n' "$sessions" | jq -e '.[1].session == "codex-offline"' >/dev/null
 printf '%s\n' "$sessions" | jq -e '.[1].status == "offline"' >/dev/null
+
+export TMUX="fake"
+AMUX_FAKE_SESSION=attention-session AMUX_FAKE_PANE=%10 "$ROOT/bin/amux" event --agent codex < "$ROOT/tests/fixtures/codex-permission.json"
+AMUX_FAKE_SESSION=done-session AMUX_FAKE_PANE=%11 "$ROOT/bin/amux" event --agent codex --event Stop < "$ROOT/tests/fixtures/codex-permission.json"
+AMUX_FAKE_SESSION=running-session AMUX_FAKE_PANE=%12 "$ROOT/bin/amux" event --agent codex --event PostToolUse < "$ROOT/tests/fixtures/codex-permission.json"
+AMUX_FAKE_SESSION=offline-session AMUX_FAKE_PANE=%13 "$ROOT/bin/amux" event --agent codex < "$ROOT/tests/fixtures/codex-permission.json"
+unset TMUX
+
+sessions="$(AMUX_FAKE_STATUS_SESSIONS=1 "$ROOT/bin/amux" sessions --json)"
+printf '%s\n' "$sessions" | jq -e '[.[] | .status] == ["attention", "done", "running", "offline"]' >/dev/null
 
 printf 'ok\n'

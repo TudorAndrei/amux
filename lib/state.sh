@@ -225,8 +225,8 @@ amux_sessions() {
 
         def rank($status):
           if $status == "attention" then 3
-          elif $status == "running" then 2
-          elif $status == "done" then 1
+          elif $status == "done" then 2
+          elif $status == "running" then 1
           elif $status == "offline" then 0
           else -1
           end;

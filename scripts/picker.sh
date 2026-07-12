@@ -49,7 +49,7 @@ display_rows="$("$AMUX" sessions --json | jq -r --argjson now "$(date +%s)" '
     (.reason // "") as $reason
     | if $reason == (.session // "") then "" else $reason end;
   .
-  | sort_by([(if .status == "attention" then 0 elif .status == "running" then 1 elif .status == "done" then 2 elif .status == "offline" then 3 else 4 end), -(.last_attached // 0)])
+  | sort_by([(if .status == "attention" then 0 elif .status == "done" then 1 elif .status == "running" then 2 elif .status == "offline" then 3 else 4 end), -(.last_attached // 0)])
   | .[]
   | (.status // "none") as $status
   | (if $status == "attention" then "▲"
@@ -90,9 +90,9 @@ display_rows="$(
 
 if command -v fzf >/dev/null 2>&1 && [ "${AMUX_PLAIN:-0}" != "1" ]; then
     if [ "$amux_use_color" = "1" ]; then
-        header=$'amux   \033[31;1m▲ attention\033[0m  \033[33m◐ running\033[0m  \033[32m● done\033[0m  \033[38;5;244m○ offline\033[0m'
+        header=$'amux   \033[31;1m▲ attention\033[0m  \033[32m● done\033[0m  \033[33m◐ running\033[0m  \033[38;5;244m○ offline\033[0m'
     else
-        header='amux   ▲ attention  ◐ running  ● done  ○ offline'
+        header='amux   ▲ attention  ● done  ◐ running  ○ offline'
     fi
 
     selected="$(
