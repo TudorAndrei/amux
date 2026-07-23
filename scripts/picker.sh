@@ -72,23 +72,22 @@ if command -v fzf >/dev/null 2>&1 && [ "${AMUX_PLAIN:-0}" != "1" ]; then
     fi
     rows_command="$(printf '%q ' "$0" --rows)"
     refresh_header='ctrl-r: refresh'
-    periodic_refresh="ctrl-r:reload-sync:$rows_command"
+    periodic_refresh="ctrl-r:reload:$rows_command"
     if printf '__amux__\n' |
         fzf --filter=__amux__ --bind='every(3600):abort' >/dev/null 2>&1; then
         refresh_header='live refresh: 1s   ctrl-r: refresh now'
-        periodic_refresh="every(1):reload-sync:$rows_command"
+        periodic_refresh="every(1):reload:$rows_command"
     fi
 
     selected="$(
         printf '%s\n' "$display_rows" |
-            fzf --ansi --reverse --track \
-                --id-nth=1 \
+            fzf --ansi --reverse \
                 --with-nth=4 \
                 --delimiter=$'\t' \
                 --nth=1 \
                 --header="$header   $refresh_header" \
                 --bind="$periodic_refresh" \
-                --bind="ctrl-r:reload-sync:$rows_command" \
+                --bind="ctrl-r:reload:$rows_command" \
                 --preview='printf "%s\n" {} | awk -F "\t" "{print \"session: \" \$1 \"\nrow: \" \$4 \"\npane: \" \$2 \"\ncwd: \" \$3}"'
     )" || exit 0
 else
