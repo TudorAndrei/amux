@@ -148,6 +148,7 @@ Status indicators are colored by default in tmux and in the picker:
 
 Set `AMUX_COLOR=0`, `AMUX_PLAIN=1`, or `NO_COLOR=1` to use monochrome output.
 
-The picker shows one row per agent pane, so sessions containing multiple agents
-can be navigated precisely. With a recent `fzf`, rows refresh once per second;
-older versions retain manual refresh on `ctrl-r`.
+The picker keeps one row per tmux session. For sessions with multiple agents,
+the row targets the highest-priority agent pane while the session name remains
+the searchable field. With a recent `fzf`, rows refresh once per second; older
+versions retain manual refresh on `ctrl-r`.

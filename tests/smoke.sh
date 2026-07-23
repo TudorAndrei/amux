@@ -176,9 +176,8 @@ printf '%s\n' "$sessions" | jq -e '.[0].status == "done" and ([.[0].agents[].sta
 test "$(AMUX_FAKE_MULTI=1 AMUX_COLOR=0 "$ROOT/bin/amux" status)" = "● 2"
 picker_rows="$(AMUX_FAKE_MULTI=1 AMUX_COLOR=0 "$ROOT/scripts/picker.sh" --rows)"
 printf '%s\n' "$picker_rows" | awk -F '\t' '
-  $1 == "multi-agent" && $2 == "%20" && $4 == "codex" { codex = 1 }
-  $1 == "multi-agent" && $2 == "%21" && $4 == "claude" { claude = 1 }
-  END { exit !(codex && claude && NR == 2) }
+  $1 == "multi-agent" { session = 1 }
+  END { exit !(session && NR == 1) }
 '
 
 unset TMUX TMUX_PANE

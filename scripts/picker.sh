@@ -23,19 +23,6 @@ render_rows() {
           (.reason // "") as $reason
           | if $reason == (.session // "") then "" else $reason end;
         .[]
-        | . as $session
-        | (if (.agents | length) > 0 then
-             .agents[]
-           else
-             {
-               agent: "",
-               pane: "",
-               cwd: "",
-               status: "none",
-               reason: "",
-               updated_at: $session.last_attached
-             }
-           end)
         | (.status // "none") as $status
         | (if $status == "attention" then "▲"
            elif $status == "running" then "◐"
@@ -44,15 +31,13 @@ render_rows() {
            else "·"
            end) as $icon
         | [
-            $session.session,
+            .session,
             (.pane // ""),
             (.cwd // ""),
-            (.agent // ""),
             $status,
             $icon,
-            (.agent // "-"),
-            $session.session,
-            age(.updated_at // $session.last_attached),
+            .session,
+            age(.last_attached),
             clean_reason
           ]
         | @tsv
@@ -67,8 +52,8 @@ render_rows() {
             return icon
         }
         {
-            printf "%s\t%s\t%s\t%s\t%s\t%s %-8.8s %-30.30s %5s  %.90s\n", \
-                $1, $2, $3, $4, $5, icon_for($5, $6), $7, $8, $9, $10
+            printf "%s\t%s\t%s\t%s %-34.34s %5s  %.90s\n", \
+                $1, $2, $3, icon_for($4, $5), $6, $7, $8
         }'
 }
 
@@ -97,17 +82,17 @@ if command -v fzf >/dev/null 2>&1 && [ "${AMUX_PLAIN:-0}" != "1" ]; then
     selected="$(
         printf '%s\n' "$display_rows" |
             fzf --ansi --reverse --track \
-                --id-nth=1,2 \
-                --with-nth=6 \
+                --id-nth=1 \
+                --with-nth=4 \
                 --delimiter=$'\t' \
-                --nth=4,6 \
+                --nth=1 \
                 --header="$header   $refresh_header" \
                 --bind="$periodic_refresh" \
                 --bind="ctrl-r:reload-sync:$rows_command" \
-                --preview='printf "%s\n" {} | awk -F "\t" "{print \"session: \" \$1 \"\nagent: \" \$4 \"\nstatus: \" \$5 \"\npane: \" \$2 \"\ncwd: \" \$3}"'
+                --preview='printf "%s\n" {} | awk -F "\t" "{print \"session: \" \$1 \"\nrow: \" \$4 \"\npane: \" \$2 \"\ncwd: \" \$3}"'
     )" || exit 0
 else
-    printf '%s\n' "$display_rows" | cut -f6
+    printf '%s\n' "$display_rows" | cut -f4
     exit 0
 fi
 
