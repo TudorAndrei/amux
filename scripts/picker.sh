@@ -88,6 +88,7 @@ if command -v fzf >/dev/null 2>&1 && [ "${AMUX_PLAIN:-0}" != "1" ]; then
                 --header="$header   $refresh_header" \
                 --bind="$periodic_refresh" \
                 --bind="ctrl-r:reload:$rows_command" \
+                --bind="change:first" \
                 --preview='printf "%s\n" {} | awk -F "\t" "{print \"session: \" \$1 \"\nrow: \" \$4 \"\npane: \" \$2 \"\ncwd: \" \$3}"'
     )" || exit 0
 else
