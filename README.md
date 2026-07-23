@@ -26,6 +26,8 @@ ${XDG_STATE_HOME:-$HOME/.local/state}/amux/events.jsonl
 
 The cached `state.json` is optimized for tmux status and picker rendering. The
 append-only `events.jsonl` file is for debugging hook input and normalization.
+State writes are serialized so hooks arriving at the same time cannot overwrite
+one another.
 
 Each state record contains:
 
@@ -42,9 +44,15 @@ Each state record contains:
 | `last_event` | Last normalized hook event name |
 | `updated_at` | Unix timestamp for stale-record handling |
 
+Inside tmux, the current pane is the agent identity. A restarted agent replaces
+the previous record for that pane, while agents in separate panes remain
+independent even when they share a tmux session. `amux sessions --json` returns
+an `agents` array for each session and a session-level status rolled up as:
+`attention`, `running`, `done`, then `offline`.
+
 Initial normalization is conservative:
 
-- permission, approval, notification, idle, ask, prompt, and waiting events set
+- permission, approval, notification, idle, ask, and waiting events set
   `attention=true`
 - stop, end, idle, done, and complete events map to `done` unless they are also
   attention events
@@ -126,6 +134,9 @@ set -g @amux-status on
 #(/path/to/amux/scripts/status.sh)
 ```
 
+Hook events request an immediate tmux status redraw. The compact indicator
+counts agents rather than tmux sessions.
+
 Status indicators are colored by default in tmux and in the picker:
 
 | Status | Indicator |
@@ -136,3 +147,7 @@ Status indicators are colored by default in tmux and in the picker:
 | `offline` | gray `○` |
 
 Set `AMUX_COLOR=0`, `AMUX_PLAIN=1`, or `NO_COLOR=1` to use monochrome output.
+
+The picker shows one row per agent pane, so sessions containing multiple agents
+can be navigated precisely. With a recent `fzf`, rows refresh once per second;
+older versions retain manual refresh on `ctrl-r`.

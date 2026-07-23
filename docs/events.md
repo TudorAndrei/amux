@@ -17,6 +17,8 @@ The raw hook payload is passed on stdin and stored in `events.jsonl`.
 - `Stop` -> `done`
 
 Codex global hooks are installed into `~/.codex/hooks.json`.
+`UserPromptSubmit` is explicitly treated as running and never inferred as an
+attention event merely because its name contains "prompt".
 
 ## Claude
 
@@ -45,4 +47,3 @@ support is best-effort until a stronger approval or idle event is exposed.
 
 The extension is installed into `~/.pi/agent/extensions/amux.ts` and registered
 in `~/.pi/agent/settings.json`.
-

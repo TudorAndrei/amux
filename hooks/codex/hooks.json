@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "__AMUX_BIN__ event --agent codex --event UserPromptSubmit",
+            "command": "__AMUX_BIN__ event --agent codex --event UserPromptSubmit --status running --attention 0",
             "timeout": 5
           }
         ]
@@ -60,4 +60,3 @@
     ]
   }
 }
-

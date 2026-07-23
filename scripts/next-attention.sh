@@ -13,15 +13,14 @@ message() {
 }
 
 target="$(
-    "$AMUX" list --json |
+    "$AMUX" sessions --json |
         jq -r '
-          .records
-          | to_entries
-          | map(select(.value.attention == true))
-          | sort_by(.value.updated_at)
+          [.[] | .agents[]]
+          | map(select(.attention == true and .live == true))
+          | sort_by(.updated_at)
           | reverse
-          | .[0].value // empty
-          | [.tmux_session // "", .tmux_pane // ""]
+          | .[0] // empty
+          | [.session // "", .pane // ""]
           | @tsv
         '
 )"
