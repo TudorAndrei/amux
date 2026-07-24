@@ -26,6 +26,8 @@ struct Shared {
     views: Vec<SessionView>,
     status: String,
     shutdown: bool,
+    monitor_server: Option<PathBuf>,
+    monitor_stop: Option<Arc<AtomicBool>>,
 }
 
 pub fn run(config: Config) -> Result<(), String> {
@@ -51,7 +53,6 @@ pub fn run(config: Config) -> Result<(), String> {
     let listener = UnixListener::bind(&path).map_err(|error| error.to_string())?;
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
         .map_err(|error| error.to_string())?;
-    let monitor_stop = Arc::new(AtomicBool::new(false));
     let state = state::load(&config)?;
     let topology = crate::tmux::Topology::default();
     let views = crate::sessions::views_with_topology(&config, &state, &topology);
@@ -63,29 +64,10 @@ pub fn run(config: Config) -> Result<(), String> {
         views,
         status,
         shutdown: false,
+        monitor_server: None,
+        monitor_stop: None,
     }));
-    if std::env::var_os("TMUX").is_some() {
-        let shared_for_monitor = Arc::clone(&shared);
-        let config_for_monitor = config.clone();
-        crate::tmux::spawn(
-            Arc::clone(&monitor_stop),
-            crate::tmux::server_from_env(),
-            move |topology| {
-                if let Ok(mut guard) = shared_for_monitor.lock()
-                    && guard.topology != topology
-                {
-                    guard.topology = topology;
-                    guard.views = crate::sessions::views_with_topology(
-                        &config_for_monitor,
-                        &guard.state,
-                        &guard.topology,
-                    );
-                    guard.status = crate::render::status(&config_for_monitor, &guard.views);
-                    guard.revision += 1;
-                }
-            },
-        );
-    }
+    attach_monitor(&config, &shared, crate::tmux::server_from_env());
     listener
         .set_nonblocking(true)
         .map_err(|error| error.to_string())?;
@@ -111,7 +93,11 @@ pub fn run(config: Config) -> Result<(), String> {
             Err(error) => return Err(error.to_string()),
         }
     }
-    monitor_stop.store(true, Ordering::Relaxed);
+    if let Ok(guard) = shared.lock()
+        && let Some(stop) = &guard.monitor_stop
+    {
+        stop.store(true, Ordering::Relaxed);
+    }
     let _ = fs::remove_file(path);
     Ok(())
 }
@@ -177,18 +163,15 @@ fn handle(
         }
         Request::Event { request } => {
             let request = *request;
+            attach_monitor(config, &shared, request.tmux_server.clone());
             let topology = shared
                 .lock()
                 .map_err(|_| "daemon state lock poisoned".to_owned())?
                 .topology
                 .clone();
-            let tmux = context_for_pane(&topology, &request.tmux_pane).unwrap_or_else(|| {
-                if request.tmux_pane.is_empty() {
-                    crate::event::TmuxContext::default()
-                } else {
-                    crate::event::current_tmux_context()
-                }
-            });
+            let tmux = context_for_pane(&topology, &request.tmux_pane)
+                .or_else(|| context_from_request(&request))
+                .unwrap_or_default();
             let (key, record) = event::normalize_at(event::NormalizeInput {
                 agent: &request.agent,
                 event_override: &request.event,
@@ -275,6 +258,46 @@ fn handle(
             }
         }
     }
+}
+
+fn attach_monitor(config: &Config, shared: &Arc<Mutex<Shared>>, server: Option<PathBuf>) {
+    let Some(server) = server else {
+        return;
+    };
+    let stop = {
+        let Ok(mut guard) = shared.lock() else {
+            return;
+        };
+        if guard.monitor_server.as_ref() == Some(&server) {
+            return;
+        }
+        if let Some(previous) = guard.monitor_stop.replace(Arc::new(AtomicBool::new(false))) {
+            previous.store(true, Ordering::Relaxed);
+        }
+        guard.monitor_server = Some(server.clone());
+        guard
+            .monitor_stop
+            .as_ref()
+            .expect("monitor stop signal")
+            .clone()
+    };
+    let shared_for_monitor = Arc::clone(shared);
+    let config_for_monitor = config.clone();
+    crate::tmux::spawn(stop, Some(server.clone()), move |topology| {
+        if let Ok(mut guard) = shared_for_monitor.lock()
+            && guard.monitor_server.as_ref() == Some(&server)
+            && guard.topology != topology
+        {
+            guard.topology = topology;
+            guard.views = crate::sessions::views_with_topology(
+                &config_for_monitor,
+                &guard.state,
+                &guard.topology,
+            );
+            guard.status = crate::render::status(&config_for_monitor, &guard.views);
+            guard.revision += 1;
+        }
+    });
 }
 
 pub fn send_event(config: &Config, request: HookRequest) -> Result<(), String> {
@@ -399,5 +422,13 @@ fn context_for_pane(
             window: fields[2].to_owned(),
             pane: fields[3].to_owned(),
         })
+    })
+}
+
+fn context_from_request(request: &HookRequest) -> Option<crate::event::TmuxContext> {
+    (!request.tmux_pane.is_empty()).then(|| crate::event::TmuxContext {
+        pane: request.tmux_pane.clone(),
+        session: request.tmux_session.clone(),
+        window: request.tmux_window.clone(),
     })
 }

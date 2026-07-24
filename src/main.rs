@@ -130,6 +130,7 @@ fn cmd_event(config: &Config, args: EventArgs) -> Result<(), String> {
     }
     let raw: Value =
         serde_json::from_str(&source).map_err(|_| "event input is not valid JSON".to_owned())?;
+    let tmux = event::current_tmux_context();
     let hook_request = ipc::HookRequest {
         agent: args.agent.clone(),
         event: args.event.clone(),
@@ -141,11 +142,10 @@ fn cmd_event(config: &Config, args: EventArgs) -> Result<(), String> {
             .ok()
             .and_then(|path| path.into_os_string().into_string().ok())
             .unwrap_or_default(),
-        tmux_pane: if env::var_os("TMUX").is_some() {
-            env::var("TMUX_PANE").unwrap_or_default()
-        } else {
-            String::new()
-        },
+        tmux_pane: tmux.pane,
+        tmux_session: tmux.session,
+        tmux_window: tmux.window,
+        tmux_server: tmux::server_from_env(),
     };
     let written_by_daemon = if env::var_os("AMUX_NO_DAEMON").is_none() {
         daemon::send_event(config, hook_request.clone()).is_ok()

@@ -617,7 +617,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
     daemon
         .arg("daemon")
         .env("AMUX_STATE_DIR", &state)
-        .env("TMUX", format!("{socket},1,1"))
+        .env_remove("TMUX")
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let mut daemon = daemon.spawn().unwrap();
@@ -632,14 +632,6 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
     subscription.write_all(b"\n").unwrap();
     subscription.shutdown(std::net::Shutdown::Write).unwrap();
     let subscription = monitor_updates(subscription);
-    wait_for_monitor_update(&subscription, |response| {
-        response["topology"]["connected"] == true
-            && response["topology"]["sessions"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|row| row.as_str().unwrap().contains("monitor"))
-    });
     let pane = String::from_utf8(
         Command::new("tmux")
             .args([
@@ -669,6 +661,14 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
         .write_all(br#"{"session_id":"monitor-codex"}"#)
         .unwrap();
     assert!(hook.wait_with_output().unwrap().status.success());
+    wait_for_monitor_update(&subscription, |response| {
+        response["topology"]["connected"] == true
+            && response["topology"]["sessions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row.as_str().unwrap().contains("monitor"))
+    });
     let records: Value = serde_json::from_slice(
         &Command::new(env!("CARGO_BIN_EXE_amux-rs"))
             .args(["list", "--json"])

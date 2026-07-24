@@ -3,6 +3,7 @@ use crate::model::State;
 use crate::tmux::Topology;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::path::PathBuf;
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -26,6 +27,9 @@ pub struct HookRequest {
     pub raw: Value,
     pub cwd: String,
     pub tmux_pane: String,
+    pub tmux_session: String,
+    pub tmux_window: String,
+    pub tmux_server: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

@@ -9,10 +9,10 @@
 
 ## Phase 2: Attach a monitor when tmux becomes available
 
-- [ ] Carry the invoking tmux server identity through IPC.
-- [ ] Attach/replace the daemon monitor for a newly supplied server.
-- [ ] Add an external-start then tmux-client integration regression.
-- [ ] Commit: `fix(daemon): attach monitor from tmux clients`
+- [x] Carry the invoking tmux server identity through IPC.
+- [x] Attach/replace the daemon monitor for a newly supplied server.
+- [x] Add an external-start then tmux-client integration regression.
+- [x] Commit: `fix(daemon): attach monitor from tmux clients`
 
 ## Phase 3: Protect fallback persistence
 
