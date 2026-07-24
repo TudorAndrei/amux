@@ -34,12 +34,14 @@ jobs:
           fetch-depth: 0
       - name: Check conventional commits
         if: github.event_name == 'pull_request'
-        uses: cocogitto/cocogitto-action@v3
+        uses: cocogitto/cocogitto-action@v4.2.0
         with:
-          check-latest-tag-only: true
+          command: check
+          args: --from-latest-tag
       - uses: dtolnay/rust-toolchain@1.96
         with:
           targets: ${{ matrix.target }}
+          components: rustfmt, clippy
       - name: Install tmux
         run: ${{ matrix.install }}
       - name: Verify
@@ -68,9 +70,9 @@ jobs:
       - name: Install Cargo version editor
         run: cargo install cargo-edit --locked
       - id: release
-        uses: cocogitto/cocogitto-action@v3
+        uses: cocogitto/cocogitto-action@v4.2.0
         with:
-          release: true
+          command: release
           git-user: Cog Bot
           git-user-email: cog@users.noreply.github.com
 
