@@ -379,6 +379,30 @@ fn concurrent_event_writes_leave_valid_state_and_log() {
 }
 
 #[test]
+#[cfg(unix)]
+fn fallback_writes_create_private_state_storage() {
+    let state = temp_dir("private-storage");
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o755)).unwrap();
+    event(
+        &state,
+        "codex",
+        &["--event", "PostToolUse"],
+        br#"{"session_id":"private-storage"}"#.to_vec(),
+    );
+    assert_eq!(
+        fs::metadata(&state).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    for path in [state.join("state.json"), state.join("events.jsonl")] {
+        assert_eq!(
+            fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+    fs::remove_dir_all(state).unwrap();
+}
+
+#[test]
 fn tmux_sessions_aggregate_agents_and_choose_the_highest_priority_pane() {
     let state = temp_dir("tmux");
     let fake_bin = temp_dir("fake-tmux");

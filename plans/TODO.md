@@ -16,9 +16,9 @@
 
 ## Phase 3: Protect fallback persistence
 
-- [ ] Enforce owner-only modes for state directories and event/state files.
-- [ ] Add daemon-disabled mode assertions and update the state-storage docs.
-- [ ] Commit: `fix(state): protect fallback event storage`
+- [x] Enforce owner-only modes for state directories and event/state files.
+- [x] Add daemon-disabled mode assertions and update the state-storage docs.
+- [x] Commit: `fix(state): protect fallback event storage`
 
 ## Phase 4: Make subscriptions finite and non-blocking
 

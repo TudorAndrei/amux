@@ -26,8 +26,9 @@ ${XDG_STATE_HOME:-$HOME/.local/state}/amux/events.jsonl
 
 The cached `state.json` is optimized for tmux status and picker rendering. The
 append-only `events.jsonl` file is for debugging hook input and normalization.
-State writes are serialized so hooks arriving at the same time cannot overwrite
-one another.
+The state directory is owner-only (`0700`), and both files are owner-readable
+and writable (`0600`), including daemon-less fallback writes. State writes are
+serialized so hooks arriving at the same time cannot overwrite one another.
 
 Each state record contains:
 

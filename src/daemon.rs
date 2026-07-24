@@ -31,9 +31,7 @@ struct Shared {
 }
 
 pub fn run(config: Config) -> Result<(), String> {
-    fs::create_dir_all(&config.state_dir).map_err(|error| error.to_string())?;
-    fs::set_permissions(&config.state_dir, fs::Permissions::from_mode(0o700))
-        .map_err(|error| error.to_string())?;
+    state::ensure_private_dir(&config)?;
     let path = socket_path(&config);
     if path.exists() {
         match UnixStream::connect(&path) {
