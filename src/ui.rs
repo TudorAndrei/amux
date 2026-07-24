@@ -219,11 +219,19 @@ impl App {
                 self.move_selection(1);
                 None
             }
+            KeyCode::Char('n') if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.move_selection(1);
+                None
+            }
             KeyCode::Char('r') if modifiers.contains(KeyModifiers::CONTROL) => {
                 let _ = Command::new("tmux").args(["refresh-client", "-S"]).status();
                 None
             }
             KeyCode::Up | KeyCode::Char('k') => {
+                self.move_selection(-1);
+                None
+            }
+            KeyCode::Char('p') if modifiers.contains(KeyModifiers::CONTROL) => {
                 self.move_selection(-1);
                 None
             }
@@ -291,7 +299,9 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
         query_area,
     );
     frame.render_widget(
-        Paragraph::new("↑/↓ navigate · Enter switch · Esc quit · type to filter · Ctrl-R refresh"),
+        Paragraph::new(
+            "↑/↓ or Ctrl-N/P navigate · Enter switch · Esc quit · type to filter · Ctrl-R refresh",
+        ),
         help_area,
     );
 }
