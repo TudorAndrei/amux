@@ -19,7 +19,6 @@ changed.
 - `SessionStart` -> `running`
 - `UserPromptSubmit` -> `running`
 - `PermissionRequest` -> `attention`
-- `PostToolUse` -> `running`
 - `Stop` -> `done`
 
 Codex global hooks are installed into `~/.codex/hooks.json`.
@@ -30,8 +29,6 @@ attention event merely because its name contains "prompt".
 
 - `SessionStart` -> `running`
 - `UserPromptSubmit` -> `running`
-- `PreToolUse` -> `running`
-- `PostToolUse` -> `running`
 - `Notification` -> `attention`
 - `Stop` -> `done`
 
@@ -47,8 +44,7 @@ The plugin is installed into `~/.config/opencode/plugins/amux.js`.
 
 ## Pi
 
-The Pi extension records `session_start`, `tool_call`, and `tool_result` events
-through the extension API. These currently map to `running`; Pi attention
+The Pi extension records `session_start`, which maps to `running`. Pi attention
 support is best-effort until a stronger approval or idle event is exposed.
 
 The extension is installed into `~/.pi/agent/extensions/amux.ts` and registered
