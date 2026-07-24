@@ -31,4 +31,3 @@ export default function amux(pi: ExtensionAPI) {
     await send("tool_result", event, ctx)
   })
 }
-
