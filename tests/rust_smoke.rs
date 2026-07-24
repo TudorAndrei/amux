@@ -57,32 +57,47 @@ fn daemon_request(state: &Path, request: &str) -> Value {
 
 #[cfg(unix)]
 fn wait_for_monitor_update(
-    reader: &mut std::io::BufReader<UnixStream>,
+    updates: &std::sync::mpsc::Receiver<Value>,
     predicate: impl Fn(&Value) -> bool,
 ) -> Value {
-    use std::io::BufRead;
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let mut line = String::new();
-        match reader.read_line(&mut line) {
-            Ok(0) => panic!("tmux monitor subscription closed"),
-            Ok(_) => {
-                let response: Value = serde_json::from_str(&line).unwrap();
-                if predicate(&response) {
-                    return response;
-                }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match updates.recv_timeout(remaining) {
+            Ok(response) if predicate(&response) => return response,
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                panic!("timed out waiting for tmux monitor update");
             }
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) && Instant::now() < deadline =>
-            {
-                thread::sleep(Duration::from_millis(10));
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("tmux monitor subscription closed");
             }
-            Err(error) => panic!("failed to read tmux monitor update: {error}"),
         }
     }
+}
+
+#[cfg(unix)]
+fn monitor_updates(stream: UnixStream) -> std::sync::mpsc::Receiver<Value> {
+    use std::io::{BufRead, BufReader};
+    let (sender, receiver) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        let mut reader = BufReader::new(stream);
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => return,
+                Ok(_) => match serde_json::from_str(&line) {
+                    Ok(response) => {
+                        if sender.send(response).is_err() {
+                            return;
+                        }
+                    }
+                    Err(_) => return,
+                },
+            }
+        }
+    });
+    receiver
 }
 
 fn fake_tmux(dir: &Path) -> PathBuf {
@@ -546,7 +561,7 @@ fn lazy_daemon_persists_events_and_serves_revisions() {
 #[test]
 #[cfg(unix)]
 fn control_monitor_reconciles_an_isolated_tmux_server() {
-    use std::io::{BufRead, BufReader, Write};
+    use std::io::Write;
     let state = temp_dir("monitor");
     let socket_name = format!(
         "amux-monitor-{}-{}",
@@ -590,30 +605,18 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
         thread::sleep(Duration::from_millis(25));
     }
     let mut subscription = UnixStream::connect(state.join("amux.sock")).unwrap();
-    subscription
-        .set_read_timeout(Some(Duration::from_secs(3)))
-        .unwrap();
     subscription.write_all(br#"{"kind":"subscribe"}"#).unwrap();
     subscription.write_all(b"\n").unwrap();
     subscription.shutdown(std::net::Shutdown::Write).unwrap();
-    let mut subscription = BufReader::new(subscription);
-    let mut saw_snapshot = false;
-    for _ in 0..4 {
-        let mut line = String::new();
-        subscription.read_line(&mut line).unwrap();
-        let response: Value = serde_json::from_str(&line).unwrap();
-        if response["topology"]["connected"] == true
+    let subscription = monitor_updates(subscription);
+    wait_for_monitor_update(&subscription, |response| {
+        response["topology"]["connected"] == true
             && response["topology"]["sessions"]
                 .as_array()
                 .unwrap()
                 .iter()
                 .any(|row| row.as_str().unwrap().contains("monitor"))
-        {
-            saw_snapshot = true;
-            break;
-        }
-    }
-    assert!(saw_snapshot);
+    });
     let pane = String::from_utf8(
         Command::new("tmux")
             .args([
@@ -722,7 +725,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
             .unwrap()
             .success()
     );
-    wait_for_monitor_update(&mut subscription, |response| {
+    wait_for_monitor_update(&subscription, |response| {
         response["topology"]["sessions"]
             .as_array()
             .is_some_and(|rows| {
@@ -802,20 +805,11 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
             .unwrap()
             .success()
     );
-    let mut saw_new_pane = false;
-    for _ in 0..4 {
-        let mut line = String::new();
-        subscription.read_line(&mut line).unwrap();
-        let response: Value = serde_json::from_str(&line).unwrap();
-        if response["topology"]["panes"]
+    wait_for_monitor_update(&subscription, |response| {
+        response["topology"]["panes"]
             .as_array()
             .is_some_and(|rows| rows.len() >= 2)
-        {
-            saw_new_pane = true;
-            break;
-        }
-    }
-    assert!(saw_new_pane);
+    });
     assert!(
         Command::new("tmux")
             .args(["-S", &socket, "new-session", "-d", "-s", "lifecycle"])
@@ -823,7 +817,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
             .unwrap()
             .success()
     );
-    wait_for_monitor_update(&mut subscription, |response| {
+    wait_for_monitor_update(&subscription, |response| {
         response["topology"]["sessions"]
             .as_array()
             .is_some_and(|rows| {
@@ -845,7 +839,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
             .unwrap()
             .success()
     );
-    wait_for_monitor_update(&mut subscription, |response| {
+    wait_for_monitor_update(&subscription, |response| {
         response["topology"]["sessions"]
             .as_array()
             .is_some_and(|rows| {
@@ -888,7 +882,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
             .unwrap()
             .success()
     );
-    wait_for_monitor_update(&mut subscription, |response| {
+    wait_for_monitor_update(&subscription, |response| {
         response["topology"]["panes"]
             .as_array()
             .is_some_and(|rows| {
@@ -903,7 +897,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
             .unwrap()
             .success()
     );
-    wait_for_monitor_update(&mut subscription, |response| {
+    wait_for_monitor_update(&subscription, |response| {
         response["topology"]["sessions"]
             .as_array()
             .is_some_and(|rows| {
@@ -919,7 +913,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
             .unwrap()
             .success()
     );
-    wait_for_monitor_update(&mut subscription, |response| {
+    wait_for_monitor_update(&subscription, |response| {
         response["topology"]["connected"] == false
     });
     assert!(
@@ -929,7 +923,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
             .unwrap()
             .success()
     );
-    wait_for_monitor_update(&mut subscription, |response| {
+    wait_for_monitor_update(&subscription, |response| {
         response["topology"]["connected"] == true
             && response["topology"]["sessions"]
                 .as_array()
