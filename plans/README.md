@@ -12,7 +12,7 @@ STOP conditions, and update this index only after its commit succeeds.
 | 002 | Attach a tmux monitor to an existing daemon | P1 | M | 001 | DONE |
 | 003 | Enforce private fallback permissions | P1 | S | — | DONE |
 | 004 | Bound and reclaim daemon subscriptions | P1 | M | 001 | DONE |
-| 005 | Use typed tmux topology snapshots | P1 | M | 002 | TODO |
+| 005 | Use typed tmux topology snapshots | P1 | M | 002 | DONE |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) |
 REJECTED (with one-line rationale).

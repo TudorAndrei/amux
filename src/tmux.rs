@@ -12,12 +12,32 @@ use tokio::time::{Duration, sleep};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct Topology {
-    pub sessions: Vec<String>,
-    pub panes: Vec<String>,
+    pub sessions: Vec<TmuxSession>,
+    pub panes: Vec<Pane>,
     pub reconciled_at: i64,
     pub connected: bool,
     pub error: String,
 }
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct TmuxSession {
+    pub id: String,
+    pub name: String,
+    pub last_attached: i64,
+    pub attached: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct Pane {
+    pub session: String,
+    pub window: String,
+    pub pane: String,
+    pub command: String,
+    pub title: String,
+    pub cwd: String,
+}
+
+const FIELD_SEPARATOR: char = '\u{1f}';
 
 trait TopologyProvider {
     fn snapshot(&self) -> Pin<Box<dyn Future<Output = Result<Topology, String>> + '_>>;
@@ -30,19 +50,25 @@ struct ControlProvider<'a> {
 impl TopologyProvider for ControlProvider<'_> {
     fn snapshot(&self) -> Pin<Box<dyn Future<Output = Result<Topology, String>> + '_>> {
         Box::pin(async move {
+            let session_format = format!(
+                "#{{session_id}}{FIELD_SEPARATOR}#{{session_last_attached}}{FIELD_SEPARATOR}#{{session_name}}{FIELD_SEPARATOR}#{{session_attached}}"
+            );
+            let pane_format = format!(
+                "#{{session_id}}{FIELD_SEPARATOR}#{{session_name}}{FIELD_SEPARATOR}#{{window_id}}{FIELD_SEPARATOR}#{{pane_id}}{FIELD_SEPARATOR}#{{pane_current_command}}{FIELD_SEPARATOR}#{{pane_pid}}{FIELD_SEPARATOR}#{{pane_title}}{FIELD_SEPARATOR}#{{pane_current_path}}"
+            );
             let sessions = self
                 .client
-                .command("list-sessions -F '#{session_id}|#{session_last_attached}|#{session_name}|#{session_attached}'")
+                .command(&format!("list-sessions -F '{session_format}'"))
                 .await
                 .map_err(|error| error.to_string())?;
             let panes = self
                 .client
-                .command("list-panes -a -F '#{session_id}|#{session_name}|#{window_id}|#{pane_id}|#{pane_current_command}|#{pane_pid}|#{pane_title}|#{pane_current_path}'")
+                .command(&format!("list-panes -a -F '{pane_format}'"))
                 .await
                 .map_err(|error| error.to_string())?;
             Ok(Topology {
-                sessions: sessions.lines,
-                panes: panes.lines,
+                sessions: parse_control_sessions(&sessions.lines)?,
+                panes: parse_control_panes(&panes.lines)?,
                 reconciled_at: SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
@@ -52,6 +78,114 @@ impl TopologyProvider for ControlProvider<'_> {
             })
         })
     }
+}
+
+pub fn direct_topology() -> Topology {
+    let session_format = format!(
+        "#{{session_last_attached}}{FIELD_SEPARATOR}#{{session_name}}{FIELD_SEPARATOR}#{{session_attached}}"
+    );
+    let pane_format = format!(
+        "#{{session_name}}{FIELD_SEPARATOR}#{{pane_id}}{FIELD_SEPARATOR}#{{pane_current_command}}{FIELD_SEPARATOR}#{{pane_pid}}{FIELD_SEPARATOR}#{{pane_title}}{FIELD_SEPARATOR}#{{pane_current_path}}"
+    );
+    Topology {
+        sessions: parse_direct_sessions(&tmux_lines("list-sessions", &session_format))
+            .unwrap_or_default(),
+        panes: parse_direct_panes(&tmux_lines("list-panes -a", &pane_format)).unwrap_or_default(),
+        ..Topology::default()
+    }
+}
+
+fn tmux_lines(command: &str, format: &str) -> Vec<String> {
+    std::process::Command::new("tmux")
+        .args(command.split(' '))
+        .arg("-F")
+        .arg(format)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| {
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn parse_direct_sessions(lines: &[String]) -> Result<Vec<TmuxSession>, String> {
+    lines
+        .iter()
+        .map(|line| {
+            let fields: Vec<_> = line.split(FIELD_SEPARATOR).collect();
+            if fields.len() != 3 || fields[1].is_empty() {
+                return Err(format!("invalid tmux session record: {line:?}"));
+            }
+            Ok(TmuxSession {
+                id: String::new(),
+                last_attached: fields[0].parse().unwrap_or(0),
+                name: fields[1].to_owned(),
+                attached: fields[2] == "1",
+            })
+        })
+        .collect()
+}
+
+fn parse_control_sessions(lines: &[String]) -> Result<Vec<TmuxSession>, String> {
+    lines
+        .iter()
+        .map(|line| {
+            let fields: Vec<_> = line.split(FIELD_SEPARATOR).collect();
+            if fields.len() != 4 || fields[2].is_empty() {
+                return Err(format!("invalid tmux control session record: {line:?}"));
+            }
+            Ok(TmuxSession {
+                id: fields[0].to_owned(),
+                last_attached: fields[1].parse().unwrap_or(0),
+                name: fields[2].to_owned(),
+                attached: fields[3] == "1",
+            })
+        })
+        .collect()
+}
+
+fn parse_direct_panes(lines: &[String]) -> Result<Vec<Pane>, String> {
+    lines
+        .iter()
+        .map(|line| {
+            let fields: Vec<_> = line.split(FIELD_SEPARATOR).collect();
+            if fields.len() != 6 {
+                return Err(format!("invalid tmux pane record: {line:?}"));
+            }
+            Ok(Pane {
+                session: fields[0].to_owned(),
+                pane: fields[1].to_owned(),
+                command: fields[2].to_owned(),
+                title: fields[4].to_owned(),
+                cwd: fields[5].to_owned(),
+                ..Pane::default()
+            })
+        })
+        .collect()
+}
+
+fn parse_control_panes(lines: &[String]) -> Result<Vec<Pane>, String> {
+    lines
+        .iter()
+        .map(|line| {
+            let fields: Vec<_> = line.split(FIELD_SEPARATOR).collect();
+            if fields.len() != 8 {
+                return Err(format!("invalid tmux control pane record: {line:?}"));
+            }
+            Ok(Pane {
+                session: fields[1].to_owned(),
+                window: fields[2].to_owned(),
+                pane: fields[3].to_owned(),
+                command: fields[4].to_owned(),
+                title: fields[6].to_owned(),
+                cwd: fields[7].to_owned(),
+            })
+        })
+        .collect()
 }
 
 pub fn server_from_env() -> Option<PathBuf> {
@@ -211,8 +345,20 @@ mod tests {
         let topology = runtime
             .block_on(
                 StaticProvider(Topology {
-                    sessions: vec!["$1|1|alpha|0".to_owned()],
-                    panes: vec!["$1|alpha|@1|%1|codex|1|codex|/tmp".to_owned()],
+                    sessions: vec![TmuxSession {
+                        id: "$1".to_owned(),
+                        name: "alpha".to_owned(),
+                        last_attached: 1,
+                        attached: false,
+                    }],
+                    panes: vec![Pane {
+                        session: "alpha".to_owned(),
+                        window: "@1".to_owned(),
+                        pane: "%1".to_owned(),
+                        command: "codex".to_owned(),
+                        title: "codex".to_owned(),
+                        cwd: "/tmp".to_owned(),
+                    }],
                     reconciled_at: 1,
                     connected: true,
                     error: String::new(),
@@ -222,5 +368,22 @@ mod tests {
             .unwrap();
         assert_eq!(topology.sessions.len(), 1);
         assert_eq!(topology.panes.len(), 1);
+    }
+
+    #[test]
+    fn parser_keeps_pipes_inside_tmux_metadata() {
+        let sessions = parse_control_sessions(&[format!(
+            "$1{FIELD_SEPARATOR}1{FIELD_SEPARATOR}alpha|beta{FIELD_SEPARATOR}1"
+        )])
+        .unwrap();
+        let panes = parse_control_panes(&[format!(
+            "$1{FIELD_SEPARATOR}alpha|beta{FIELD_SEPARATOR}@1{FIELD_SEPARATOR}%1{FIELD_SEPARATOR}codex|agent{FIELD_SEPARATOR}1{FIELD_SEPARATOR}title|detail{FIELD_SEPARATOR}/tmp/a|b"
+        )])
+        .unwrap();
+        assert_eq!(sessions[0].name, "alpha|beta");
+        assert_eq!(panes[0].session, "alpha|beta");
+        assert_eq!(panes[0].command, "codex|agent");
+        assert_eq!(panes[0].title, "title|detail");
+        assert_eq!(panes[0].cwd, "/tmp/a|b");
     }
 }

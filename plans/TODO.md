@@ -29,10 +29,10 @@
 
 ## Phase 5: Type the tmux topology boundary
 
-- [ ] Parse direct and daemon tmux output through one typed boundary.
-- [ ] Remove positional pipe splitting from session views and daemon lookup.
-- [ ] Add pipe-containing metadata regressions and preserve current ordering.
-- [ ] Commit: `refactor(tmux): type topology snapshots`
+- [x] Parse direct and daemon tmux output through one typed boundary.
+- [x] Remove positional pipe splitting from session views and daemon lookup.
+- [x] Add pipe-containing metadata regressions and preserve current ordering.
+- [x] Commit: `refactor(tmux): type topology snapshots`
 
 ## Verification
 

@@ -61,13 +61,14 @@ fn wait_for_monitor_update(
     predicate: impl Fn(&Value) -> bool,
 ) -> Value {
     let deadline = Instant::now() + Duration::from_secs(10);
+    let mut last = None;
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         match updates.recv_timeout(remaining) {
             Ok(response) if predicate(&response) => return response,
-            Ok(_) => {}
+            Ok(response) => last = Some(response),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                panic!("timed out waiting for tmux monitor update");
+                panic!("timed out waiting for tmux monitor update: {last:?}");
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                 panic!("tmux monitor subscription closed");
@@ -113,10 +114,13 @@ case "$1" in
       '#{window_id}') printf '%s\n' @1 ;;
       '#{pane_id}') printf '%s\n' "${TMUX_PANE:-%20}" ;;
     esac ;;
-  list-sessions) printf '500|multi-agent|0\n' ;;
+  list-sessions)
+    separator=$'\037'
+    printf '500%s%s%s0\n' "$separator" multi-agent "$separator" ;;
   list-panes)
-    printf 'multi-agent|%%20|codex|500|codex|/tmp/multi-codex\n'
-    printf 'multi-agent|%%21|claude|501|claude|/tmp/multi-claude\n' ;;
+    separator=$'\037'
+    printf 'multi-agent%s%%20%scodex%s500%scodex%s/tmp/multi-codex\n' "$separator" "$separator" "$separator" "$separator" "$separator"
+    printf 'multi-agent%s%%21%sclaude%s501%sclaude%s/tmp/multi-claude\n' "$separator" "$separator" "$separator" "$separator" "$separator" ;;
   refresh-client) ;;
 esac
 "##,
@@ -379,6 +383,45 @@ fn concurrent_event_writes_leave_valid_state_and_log() {
 }
 
 #[test]
+fn direct_clear_and_event_leave_matching_state_and_log_files() {
+    use std::io::Write;
+
+    let state = temp_dir("clear-race");
+    for index in 0..20 {
+        let mut event_child = amux(&state);
+        event_child
+            .args(["event", "--agent", "codex", "--event", "PostToolUse"])
+            .stdin(Stdio::piped());
+        let mut event_child = event_child.spawn().unwrap();
+        event_child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(format!(r#"{{"session_id":"clear-race-{index}"}}"#).as_bytes())
+            .unwrap();
+        let clear_child = amux(&state).arg("clear").spawn().unwrap();
+        assert!(event_child.wait_with_output().unwrap().status.success());
+        assert!(clear_child.wait_with_output().unwrap().status.success());
+        let state_exists = state.join("state.json").exists();
+        let log_exists = state.join("events.jsonl").exists();
+        assert_eq!(state_exists, log_exists);
+        if state_exists {
+            let value: Value =
+                serde_json::from_slice(&fs::read(state.join("state.json")).unwrap()).unwrap();
+            assert!(!value["records"].as_object().unwrap().is_empty());
+            assert!(
+                !fs::read_to_string(state.join("events.jsonl"))
+                    .unwrap()
+                    .lines()
+                    .collect::<Vec<_>>()
+                    .is_empty()
+            );
+        }
+    }
+    fs::remove_dir_all(state).unwrap();
+}
+
+#[test]
 #[cfg(unix)]
 fn fallback_writes_create_private_state_storage() {
     let state = temp_dir("private-storage");
@@ -556,6 +599,14 @@ fn lazy_daemon_persists_events_and_serves_revisions() {
     )
     .unwrap();
     assert!(listed["records"].as_object().unwrap().is_empty());
+    assert!(
+        amux(&state)
+            .args(["picker", "--rows"])
+            .output()
+            .unwrap()
+            .stdout
+            .is_empty()
+    );
     assert!(!state.join("state.json").exists());
     assert!(!state.join("events.jsonl").exists());
     assert_eq!(
@@ -689,7 +740,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|row| row.as_str().unwrap().contains("monitor"))
+                .any(|row| row["name"].as_str() == Some("monitor"))
     });
     let records: Value = serde_json::from_slice(
         &Command::new(env!("CARGO_BIN_EXE_amux-rs"))
@@ -775,7 +826,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
             .as_array()
             .is_some_and(|rows| {
                 rows.iter()
-                    .any(|row| row.as_str().unwrap().contains("agents"))
+                    .any(|row| row["name"].as_str() == Some("agents"))
             })
     });
     let panes = String::from_utf8(
@@ -867,7 +918,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
             .as_array()
             .is_some_and(|rows| {
                 rows.iter()
-                    .any(|row| row.as_str().unwrap().contains("lifecycle"))
+                    .any(|row| row["name"].as_str() == Some("lifecycle"))
             })
     });
     assert!(
@@ -889,7 +940,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
             .as_array()
             .is_some_and(|rows| {
                 rows.iter()
-                    .any(|row| row.as_str().unwrap().contains("renamed"))
+                    .any(|row| row["name"].as_str() == Some("renamed"))
             })
     });
     let monitor_window = String::from_utf8(
@@ -932,7 +983,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
             .as_array()
             .is_some_and(|rows| {
                 rows.iter()
-                    .any(|row| row.as_str().unwrap().contains("|renamed|"))
+                    .any(|row| row["session"].as_str() == Some("renamed"))
             })
     });
     assert!(
@@ -948,7 +999,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
             .is_some_and(|rows| {
                 !rows
                     .iter()
-                    .any(|row| row.as_str().unwrap().contains("renamed"))
+                    .any(|row| row["name"].as_str() == Some("renamed"))
             })
     });
     assert!(
@@ -974,7 +1025,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
                 .as_array()
                 .is_some_and(|rows| {
                     rows.iter()
-                        .any(|row| row.as_str().unwrap().contains("recovered"))
+                        .any(|row| row["name"].as_str() == Some("recovered"))
                 })
     });
     let _ = daemon_request(&state, r#"{"kind":"shutdown"}"#);

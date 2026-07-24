@@ -431,12 +431,11 @@ fn context_for_pane(
     topology: &crate::tmux::Topology,
     pane_id: &str,
 ) -> Option<crate::event::TmuxContext> {
-    topology.panes.iter().find_map(|line| {
-        let fields: Vec<_> = line.split('|').collect();
-        (fields.len() >= 4 && fields[3] == pane_id).then(|| crate::event::TmuxContext {
-            session: fields[1].to_owned(),
-            window: fields[2].to_owned(),
-            pane: fields[3].to_owned(),
+    topology.panes.iter().find_map(|pane| {
+        (pane.pane == pane_id).then(|| crate::event::TmuxContext {
+            session: pane.session.clone(),
+            window: pane.window.clone(),
+            pane: pane.pane.clone(),
         })
     })
 }

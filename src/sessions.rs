@@ -1,87 +1,6 @@
 use crate::config::Config;
 use crate::event::now;
 use crate::model::{AgentView, Record, SessionView, State};
-use std::process::Command;
-
-#[derive(Clone, Debug)]
-struct TmuxSession {
-    name: String,
-    last_attached: i64,
-    attached: bool,
-}
-#[derive(Clone, Debug)]
-struct Pane {
-    session: String,
-    pane: String,
-    command: String,
-    title: String,
-    cwd: String,
-}
-
-fn tmux_lines(args: &[&str]) -> String {
-    Command::new("tmux")
-        .args(args)
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
-        .unwrap_or_default()
-}
-
-fn tmux_sessions() -> Vec<TmuxSession> {
-    tmux_lines(&[
-        "list-sessions",
-        "-F",
-        "#{session_last_attached}|#{session_name}|#{session_attached}",
-    ])
-    .lines()
-    .filter_map(|line| {
-        let parts: Vec<_> = line.split('|').collect();
-        (parts.len() >= 3 && !parts[1].is_empty()).then(|| TmuxSession {
-            name: parts[1].to_owned(),
-            last_attached: parts[0].parse().unwrap_or(0),
-            attached: parts[2] == "1",
-        })
-    })
-    .collect()
-}
-
-fn panes() -> Vec<Pane> {
-    tmux_lines(&["list-panes", "-a", "-F", "#{session_name}|#{pane_id}|#{pane_current_command}|#{pane_pid}|#{pane_title}|#{pane_current_path}"])
-        .lines().filter_map(|line| { let parts: Vec<_> = line.split('|').collect(); (parts.len() >= 6).then(|| Pane { session: parts[0].to_owned(), pane: parts[1].to_owned(), command: parts[2].to_owned(), title: parts[4].to_owned(), cwd: parts[5].to_owned() }) }).collect()
-}
-
-fn topology_sessions(topology: &crate::tmux::Topology) -> Vec<TmuxSession> {
-    topology
-        .sessions
-        .iter()
-        .filter_map(|line| {
-            let parts: Vec<_> = line.split('|').collect();
-            (parts.len() >= 4 && !parts[2].is_empty()).then(|| TmuxSession {
-                name: parts[2].to_owned(),
-                last_attached: parts[1].parse().unwrap_or(0),
-                attached: parts[3] == "1",
-            })
-        })
-        .collect()
-}
-
-fn topology_panes(topology: &crate::tmux::Topology) -> Vec<Pane> {
-    topology
-        .panes
-        .iter()
-        .filter_map(|line| {
-            let parts: Vec<_> = line.split('|').collect();
-            (parts.len() >= 8).then(|| Pane {
-                session: parts[1].to_owned(),
-                pane: parts[3].to_owned(),
-                command: parts[4].to_owned(),
-                title: parts[6].to_owned(),
-                cwd: parts[7].to_owned(),
-            })
-        })
-        .collect()
-}
 
 fn uuid_like(value: &str) -> bool {
     let bytes = value.as_bytes();
@@ -150,7 +69,12 @@ fn agent_rank(status: &str) -> i8 {
     }
 }
 
-fn as_agent(record: &Record, pane: Option<&Pane>, session: &str, live: bool) -> AgentView {
+fn as_agent(
+    record: &Record,
+    pane: Option<&crate::tmux::Pane>,
+    session: &str,
+    live: bool,
+) -> AgentView {
     AgentView {
         agent: record.agent.clone(),
         agent_session_id: record.agent_session_id.clone(),
@@ -175,7 +99,7 @@ fn as_agent(record: &Record, pane: Option<&Pane>, session: &str, live: bool) -> 
 }
 
 pub fn views(config: &Config, state: &State) -> Vec<SessionView> {
-    views_from(config, state, tmux_sessions(), panes())
+    views_with_topology(config, state, &crate::tmux::direct_topology())
 }
 
 /// Derive session rows from a daemon-owned tmux control snapshot. Unlike
@@ -189,16 +113,16 @@ pub fn views_with_topology(
     views_from(
         config,
         state,
-        topology_sessions(topology),
-        topology_panes(topology),
+        topology.sessions.clone(),
+        topology.panes.clone(),
     )
 }
 
 fn views_from(
     config: &Config,
     state: &State,
-    tmux_sessions: Vec<TmuxSession>,
-    panes: Vec<Pane>,
+    tmux_sessions: Vec<crate::tmux::TmuxSession>,
+    panes: Vec<crate::tmux::Pane>,
 ) -> Vec<SessionView> {
     let cutoff = now() - config.stale_seconds;
     let mut records: Vec<Record> = state
@@ -347,10 +271,10 @@ mod tests {
         };
         let mut records = BTreeMap::new();
         records.insert(
-            "codex:attached:%1".to_owned(),
+            "codex:attached|pipe:%1".to_owned(),
             Record {
                 agent: "codex".to_owned(),
-                tmux_session: "attached".to_owned(),
+                tmux_session: "attached|pipe".to_owned(),
                 tmux_pane: "%1".to_owned(),
                 status: "attention".to_owned(),
                 attention: true,
@@ -359,8 +283,20 @@ mod tests {
             },
         );
         let topology = crate::tmux::Topology {
-            sessions: vec!["$0|42|attached|1".to_owned()],
-            panes: vec!["$0|attached|@0|%1|codex|1|codex|/tmp".to_owned()],
+            sessions: vec![crate::tmux::TmuxSession {
+                id: "$0".to_owned(),
+                name: "attached|pipe".to_owned(),
+                last_attached: 42,
+                attached: true,
+            }],
+            panes: vec![crate::tmux::Pane {
+                session: "attached|pipe".to_owned(),
+                window: "@0".to_owned(),
+                pane: "%1".to_owned(),
+                command: "codex".to_owned(),
+                title: "codex".to_owned(),
+                cwd: "/tmp".to_owned(),
+            }],
             connected: true,
             ..crate::tmux::Topology::default()
         };
@@ -373,7 +309,7 @@ mod tests {
             &topology,
         );
         assert_eq!(views.len(), 1);
-        assert_eq!(views[0].session, "attached");
+        assert_eq!(views[0].session, "attached|pipe");
         assert!(views[0].attached);
         assert_eq!(views[0].status, "attention");
     }
