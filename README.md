@@ -74,7 +74,8 @@ workers. Set `AMUX_HIDE_SUBAGENTS=0` to show tmux-backed subagents again.
 Runtime requirements are tmux 3.2 or newer and a supported macOS or Linux
 release archive. Archives contain the native `amux-rs` binary, the `bin/amux`
 launcher, tmux plugin entry point, and hook templates; they do not require
-Rust, `jq`, or `fzf` after installation.
+Rust or `jq` after installation. When `fzf` is installed, amux uses the
+classic reverse-list picker; otherwise it uses the built-in native picker.
 
 For a release archive, unpack it and reference the extracted directory from
 TPM or with `run-shell`:
@@ -91,6 +92,10 @@ cargo build --release --bin amux-rs
 make check
 make package
 ```
+
+The tmux plugin deliberately does not compile Rust on demand. Source checkouts
+must be built before loading the plugin; end users should install a release
+archive.
 
 Releases use [Cocogitto](https://github.com/cocogitto/cocogitto): commits after
 the `v0.0.0` compatibility baseline must follow Conventional Commits, and the

@@ -290,16 +290,7 @@ fn cmd_next_attention(config: &Config) -> Result<(), String> {
         .filter(|agent| agent.attention && agent.live)
         .max_by_key(|agent| agent.updated_at);
     if let Some(target) = target {
-        if !target.session.is_empty() {
-            let _ = Command::new("tmux")
-                .args(["switch-client", "-t", &target.session])
-                .status();
-        }
-        if !target.pane.is_empty() {
-            let _ = Command::new("tmux")
-                .args(["select-pane", "-t", &target.pane])
-                .status();
-        }
+        tmux::switch_client(&target.session, &target.pane)?;
     } else if Command::new("tmux")
         .args(["display-message", "amux: no agents need attention"])
         .status()
