@@ -71,19 +71,11 @@ workers. Set `AMUX_HIDE_SUBAGENTS=0` to show tmux-backed subagents again.
 
 ## Installation and Requirements
 
-Runtime requirements are tmux 3.2 or newer and a supported macOS or Linux
-release archive. Archives contain the native `amux-rs` binary, the `bin/amux`
-launcher, tmux plugin entry point, and hook templates; they do not require
-Rust or `jq` after installation. When `fzf` is installed, amux uses the
-classic reverse-list picker; otherwise it uses the built-in native picker.
-
-For a release archive, unpack it and reference the extracted directory from
-TPM or with `run-shell`:
-
-```bash
-tar -xzf amux-<version>-<target>.tar.gz
-tmux run-shell /path/to/amux-<version>-<target>/amux.tmux
-```
+Runtime requirements are tmux 3.2 or newer and GitHub CLI (`gh`). TPM is the
+supported installation and update path: it downloads the matching native
+release binary automatically. Rust and `jq` are never required at runtime.
+When `fzf` is installed, amux uses the classic reverse-list picker; otherwise
+it uses the built-in native picker.
 
 Contributors can build from source with Rust 1.96 or newer:
 
@@ -92,9 +84,9 @@ mise run package
 mise run check
 ```
 
-The tmux plugin deliberately does not compile Rust on demand. Source checkouts
-must be built before loading the plugin; end users should install a release
-archive.
+The tmux plugin deliberately never compiles Rust on demand. TPM downloads a
+prebuilt release asset on installation and whenever its checkout version needs
+a matching binary.
 
 Releases use [Cocogitto](https://github.com/cocogitto/cocogitto): commits after
 the `v0.0.0` compatibility baseline must follow Conventional Commits, and the
@@ -154,17 +146,22 @@ path to `bin/amux`; neither installation nor normal amux use requires `jq`.
 
 ## tmux
 
-Install from a release archive. Unpack it to its final path, then load the
-plugin and write hooks from that same directory:
+Install with TPM (the normal tmux plugin workflow):
 
-```bash
-tmux run-shell /path/to/amux-<version>-<target>/amux.tmux
-/path/to/amux-<version>-<target>/bin/amux install-hooks --write
-tmux refresh-client -S
+```tmux
+set -g @plugin 'TudorAndrei/amux'
 ```
 
-TPM source checkouts are not a supported runtime installation: they do not
-contain an architecture-specific native binary.
+Press `prefix + I` to install. Press `prefix + U` to update the plugin; the
+next TPM reload or amux command fetches the matching release binary
+automatically. On Apple Silicon macOS, Linux x86_64, and Linux arm64, there is
+no Cargo build and no manual archive step.
+
+After TPM installs amux, write global hooks from its checkout:
+
+```bash
+~/.tmux/plugins/amux/bin/amux install-hooks --write
+```
 
 Reloading replaces the previously registered amux status command and picker
 binding. The native runtime reuses the version-one state file, and starts its
