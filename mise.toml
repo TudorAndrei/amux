@@ -75,7 +75,7 @@ package="amux-${version}-${target}"
 
 cargo build --release --bin amux-rs
 mkdir -p "dist/${package}/bin" "dist/${package}/docs" "dist/${package}/hooks" "dist/${package}/scripts"
-cp amux.tmux README.md VERSION "dist/${package}/"
+cp amux.tmux README.md THIRD_PARTY_NOTICES.md VERSION "dist/${package}/"
 cp bin/amux target/release/amux-rs "dist/${package}/bin/"
 cp scripts/ensure-runtime.sh "dist/${package}/scripts/"
 cp -R docs/. "dist/${package}/docs/"
