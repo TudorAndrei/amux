@@ -13,3 +13,85 @@ HK_MISE = 1
 
 [hooks]
 postinstall = "hk install --mise"
+
+[tasks.build]
+description = "Build the development amux binary"
+run = "cargo build --bin amux-rs"
+sources = ["Cargo.toml", "Cargo.lock", "src/**/*.rs"]
+outputs = ["target/debug/amux-rs"]
+
+[tasks.syntax]
+description = "Check shell syntax"
+run = "bash -n amux.tmux bin/amux tests/*.sh"
+
+[tasks.smoke]
+description = "Run the shell-level smoke test"
+depends = ["build"]
+run = "bash tests/smoke.sh"
+
+[tasks.shellcheck]
+description = "Lint shell entry points"
+run = "shellcheck amux.tmux bin/amux tests/*.sh"
+
+[tasks.fmt-check]
+description = "Check Rust formatting"
+run = "cargo fmt --check"
+
+[tasks.clippy]
+description = "Lint Rust"
+run = "cargo clippy --all-targets --all-features -- -D warnings"
+
+[tasks.rust-test]
+description = "Run Rust unit and integration tests"
+run = "cargo test --all-features"
+
+[tasks.check]
+description = "Run the complete verification suite"
+depends = ["build"]
+run = '''
+mise run syntax
+mise run smoke
+mise run shellcheck
+mise run fmt-check
+mise run clippy
+mise run rust-test
+'''
+
+[tasks.cog-check]
+description = "Check Conventional Commits since the latest release"
+run = "cog check --from-latest-tag"
+
+[tasks.package]
+description = "Build a release archive for the current host"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+version="$(tr -d '\n' < VERSION)"
+target="${TARGET:-$(rustc -vV | sed -n 's/^host: //p')}"
+package="amux-${version}-${target}"
+
+cargo build --release --bin amux-rs
+mkdir -p "dist/${package}/bin" "dist/${package}/docs" "dist/${package}/hooks"
+cp amux.tmux README.md VERSION "dist/${package}/"
+cp bin/amux target/release/amux-rs "dist/${package}/bin/"
+cp -R docs/. "dist/${package}/docs/"
+cp -R hooks/. "dist/${package}/hooks/"
+tar -C dist -czf "dist/${package}.tar.gz" "${package}"
+printf 'built dist/%s.tar.gz\n' "${package}"
+'''
+
+[tasks.package-check]
+description = "Verify the packaged launcher has no source-build fallback"
+depends = ["package"]
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+version="$(tr -d '\n' < VERSION)"
+target="${TARGET:-$(rustc -vV | sed -n 's/^host: //p')}"
+package="amux-${version}-${target}"
+package_dir="$(mktemp -d)"
+trap 'rm -rf "$package_dir"' EXIT
+tar -xzf "dist/${package}.tar.gz" -C "$package_dir"
+test ! -e "$package_dir/${package}/Cargo.toml"
+"$package_dir/${package}/bin/amux" --version
+'''

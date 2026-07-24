@@ -2,10 +2,7 @@
 set -euo pipefail
 
 SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-AMUX_ROOT="${AMUX_ROOT:-$SCRIPT_ROOT}"
-if [ ! -f "$AMUX_ROOT/Cargo.toml" ]; then
-	AMUX_ROOT="$SCRIPT_ROOT"
-fi
+AMUX_ROOT="$SCRIPT_ROOT"
 export AMUX_ROOT
 for candidate in "$AMUX_ROOT/target/release/amux-rs" "$AMUX_ROOT/target/debug/amux-rs" "$AMUX_ROOT/bin/amux-rs"; do
 	if [ -x "$candidate" ]; then

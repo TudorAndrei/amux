@@ -88,9 +88,8 @@ tmux run-shell /path/to/amux-<version>-<target>/amux.tmux
 Contributors can build from source with Rust 1.96 or newer:
 
 ```bash
-cargo build --release --bin amux-rs
-make check
-make package
+mise run package
+mise run check
 ```
 
 The tmux plugin deliberately does not compile Rust on demand. Source checkouts
@@ -100,9 +99,9 @@ archive.
 Releases use [Cocogitto](https://github.com/cocogitto/cocogitto): commits after
 the `v0.0.0` compatibility baseline must follow Conventional Commits, and the
 release workflow derives the next version, changelog, tag, and archives from
-that history. Run `make cog-check` to verify the local range.
+that history. Run `mise run cog-check` to verify the local range.
 
-`make package` writes a deployable archive under `dist/` for the current host
+`mise run package` writes a deployable archive under `dist/` for the current host
 target. GitHub Actions also builds archives for macOS arm64 and Linux
 x86_64/arm64.
 
@@ -123,7 +122,7 @@ by `doctor` without being overwritten.
 
 ```bash
 tests/smoke.sh
-make check
+mise run check
 ```
 
 Measured native-runtime latency, tmux reconciliation behavior, and the
@@ -144,30 +143,28 @@ Install global hooks:
 bin/amux install-hooks --write
 ```
 
+amux only installs lifecycle hooks: session start, prompt submission,
+permission/notification, and stop. It deliberately does not install
+`PreToolUse` or `PostToolUse` hooks, so individual tool calls never add amux
+tracking output to an agent conversation.
+
 The Rust installer writes timestamped backups before replacing existing global
 config files. Hook assets live under `hooks/` and are rendered with the absolute
 path to `bin/amux`; neither installation nor normal amux use requires `jq`.
 
 ## tmux
 
-Install with TPM:
-
-```tmux
-set -g @plugin 'TudorAndrei/amux'
-set -g @amux-status on
-```
-
-Then reload tmux and run TPM install (`prefix + I`).
-
-To migrate an existing shell-based installation to a release archive, unpack
-the archive to its final path, then reload the plugin and rewrite hooks from
-that path:
+Install from a release archive. Unpack it to its final path, then load the
+plugin and write hooks from that same directory:
 
 ```bash
 tmux run-shell /path/to/amux-<version>-<target>/amux.tmux
 /path/to/amux-<version>-<target>/bin/amux install-hooks --write
 tmux refresh-client -S
 ```
+
+TPM source checkouts are not a supported runtime installation: they do not
+contain an architecture-specific native binary.
 
 Reloading replaces the previously registered amux status command and picker
 binding. The native runtime reuses the version-one state file, and starts its
