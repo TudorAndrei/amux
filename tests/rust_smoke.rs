@@ -35,6 +35,16 @@ fn temp_dir(label: &str) -> PathBuf {
     path
 }
 
+fn tmux_temp_dir(label: &str) -> PathBuf {
+    let path = Path::new("/private/tmp").join(format!(
+        "amux-{label}-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&path).unwrap();
+    path
+}
+
 fn fixture(name: &str) -> Vec<u8> {
     fs::read(
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -141,6 +151,12 @@ esac
     #[cfg(unix)]
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
     path
+}
+
+fn tmux_command(socket_dir: &Path) -> Command {
+    let mut command = Command::new("tmux");
+    command.env("TMUX_TMPDIR", socket_dir);
+    command
 }
 
 #[test]
@@ -674,20 +690,21 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
     let _lock = real_server_test_lock();
     use std::io::Write;
     let state = temp_dir("monitor");
+    let tmux_tmpdir = tmux_temp_dir("monitor");
     let socket_name = format!(
         "amux-monitor-{}-{}",
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     );
     assert!(
-        Command::new("tmux")
+        tmux_command(&tmux_tmpdir)
             .args(["-L", &socket_name, "new-session", "-d", "-s", "monitor"])
             .status()
             .unwrap()
             .success()
     );
     let socket = String::from_utf8(
-        Command::new("tmux")
+        tmux_command(&tmux_tmpdir)
             .args([
                 "-L",
                 &socket_name,
@@ -720,7 +737,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
     subscription.write_all(b"\n").unwrap();
     let subscription = monitor_updates(subscription);
     let pane = String::from_utf8(
-        Command::new("tmux")
+        tmux_command(&tmux_tmpdir)
             .args([
                 "-S",
                 &socket,
@@ -804,7 +821,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
     let claude_command = agent_commands.join("claude");
     fs::copy(&codex_command, &claude_command).unwrap();
     assert!(
-        Command::new("tmux")
+        tmux_command(&tmux_tmpdir)
             .args([
                 "-S",
                 &socket,
@@ -820,7 +837,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
             .success()
     );
     assert!(
-        Command::new("tmux")
+        tmux_command(&tmux_tmpdir)
             .args([
                 "-S",
                 &socket,
@@ -844,7 +861,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
             })
     });
     let panes = String::from_utf8(
-        Command::new("tmux")
+        tmux_command(&tmux_tmpdir)
             .args([
                 "-S",
                 &socket,
@@ -909,7 +926,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
     assert_eq!(agents["status"], "attention");
     assert_eq!(agents["agents"][0]["agent"], "claude");
     assert!(
-        Command::new("tmux")
+        tmux_command(&tmux_tmpdir)
             .args(["-S", &socket, "new-window", "-d", "-t", "monitor"])
             .status()
             .unwrap()
@@ -921,7 +938,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
             .is_some_and(|rows| rows.len() >= 2)
     });
     assert!(
-        Command::new("tmux")
+        tmux_command(&tmux_tmpdir)
             .args(["-S", &socket, "new-session", "-d", "-s", "lifecycle"])
             .status()
             .unwrap()
@@ -936,7 +953,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
             })
     });
     assert!(
-        Command::new("tmux")
+        tmux_command(&tmux_tmpdir)
             .args([
                 "-S",
                 &socket,
@@ -958,7 +975,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
             })
     });
     let monitor_window = String::from_utf8(
-        Command::new("tmux")
+        tmux_command(&tmux_tmpdir)
             .args([
                 "-S",
                 &socket,
@@ -978,7 +995,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
     .unwrap()
     .to_owned();
     assert!(
-        Command::new("tmux")
+        tmux_command(&tmux_tmpdir)
             .args([
                 "-S",
                 &socket,
@@ -1001,7 +1018,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
             })
     });
     assert!(
-        Command::new("tmux")
+        tmux_command(&tmux_tmpdir)
             .args(["-S", &socket, "kill-session", "-t", "renamed"])
             .status()
             .unwrap()
@@ -1017,7 +1034,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
             })
     });
     assert!(
-        Command::new("tmux")
+        tmux_command(&tmux_tmpdir)
             .args(["-S", &socket, "kill-server"])
             .status()
             .unwrap()
@@ -1027,7 +1044,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
         response["topology"]["connected"] == false
     });
     assert!(
-        Command::new("tmux")
+        tmux_command(&tmux_tmpdir)
             .args(["-L", &socket_name, "new-session", "-d", "-s", "recovered"])
             .status()
             .unwrap()
@@ -1044,10 +1061,11 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
     });
     let _ = daemon_request(&state, r#"{"kind":"shutdown"}"#);
     let _ = daemon.wait();
-    let _ = Command::new("tmux")
+    let _ = tmux_command(&tmux_tmpdir)
         .args(["-S", &socket, "kill-server"])
         .status();
     fs::remove_dir_all(state).unwrap();
+    fs::remove_dir_all(tmux_tmpdir).unwrap();
     fs::remove_dir_all(agent_commands).unwrap();
 }
 
@@ -1055,13 +1073,14 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
 #[cfg(unix)]
 fn tmux_plugin_loads_native_picker_and_status_commands() {
     let _lock = real_server_test_lock();
+    let tmux_tmpdir = tmux_temp_dir("plugin");
     let socket_name = format!(
         "amux-plugin-{}-{}",
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     );
     assert!(
-        Command::new("tmux")
+        tmux_command(&tmux_tmpdir)
             .args(["-L", &socket_name, "new-session", "-d", "-s", "plugin"])
             .status()
             .unwrap()
@@ -1070,14 +1089,14 @@ fn tmux_plugin_loads_native_picker_and_status_commands() {
     let plugin = Path::new(env!("CARGO_MANIFEST_DIR")).join("amux.tmux");
     let legacy_status = plugin.parent().unwrap().join("scripts/status.sh");
     assert!(
-        Command::new("tmux")
+        tmux_command(&tmux_tmpdir)
             .args(["-L", &socket_name, "set-option", "-g", "@amux-status", "on"])
             .status()
             .unwrap()
             .success()
     );
     assert!(
-        Command::new("tmux")
+        tmux_command(&tmux_tmpdir)
             .args([
                 "-L",
                 &socket_name,
@@ -1091,7 +1110,7 @@ fn tmux_plugin_loads_native_picker_and_status_commands() {
             .success()
     );
     assert!(
-        Command::new("tmux")
+        tmux_command(&tmux_tmpdir)
             .args([
                 "-L",
                 &socket_name,
@@ -1105,7 +1124,7 @@ fn tmux_plugin_loads_native_picker_and_status_commands() {
             .success()
     );
     assert!(
-        Command::new("tmux")
+        tmux_command(&tmux_tmpdir)
             .args(["-L", &socket_name, "run-shell", plugin.to_str().unwrap()])
             .status()
             .unwrap()
@@ -1114,7 +1133,7 @@ fn tmux_plugin_loads_native_picker_and_status_commands() {
     let mut picker = String::new();
     for _ in 0..20 {
         picker = String::from_utf8(
-            Command::new("tmux")
+            tmux_command(&tmux_tmpdir)
                 .args(["-L", &socket_name, "list-keys", "-T", "prefix"])
                 .output()
                 .unwrap()
@@ -1131,7 +1150,7 @@ fn tmux_plugin_loads_native_picker_and_status_commands() {
         "unexpected picker binding: {picker}"
     );
     let status_command = String::from_utf8(
-        Command::new("tmux")
+        tmux_command(&tmux_tmpdir)
             .args([
                 "-L",
                 &socket_name,
@@ -1146,7 +1165,7 @@ fn tmux_plugin_loads_native_picker_and_status_commands() {
     .unwrap();
     assert!(status_command.contains("bin/amux status"));
     let status_right = String::from_utf8(
-        Command::new("tmux")
+        tmux_command(&tmux_tmpdir)
             .args(["-L", &socket_name, "show-option", "-gqv", "status-right"])
             .output()
             .unwrap()
@@ -1156,7 +1175,8 @@ fn tmux_plugin_loads_native_picker_and_status_commands() {
     assert!(status_right.contains("bin/amux status"));
     assert!(!status_right.contains("scripts/status.sh"));
     assert!(status_right.contains("host"));
-    let _ = Command::new("tmux")
+    let _ = tmux_command(&tmux_tmpdir)
         .args(["-L", &socket_name, "kill-server"])
         .status();
+    fs::remove_dir_all(tmux_tmpdir).unwrap();
 }
