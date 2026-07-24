@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.1.2](https://github.com/TudorAndrei/amux/compare/a21e93951bc4dbbd64b3141cddc2813b0d57b0da..v0.1.2) - 2026-07-24
+#### Bug Fixes
+- (**tpm**) install matching native release - ([a21e939](https://github.com/TudorAndrei/amux/commit/a21e93951bc4dbbd64b3141cddc2813b0d57b0da)) - TudorAndrei
+
+- - -
+
 ## [v0.1.1](https://github.com/TudorAndrei/amux/compare/42eac7e82f9ba6b8e80e379fe9f8041cbe532759..v0.1.1) - 2026-07-24
 #### Bug Fixes
 - (**ci**) install Rust lint components with mise - ([7c5108c](https://github.com/TudorAndrei/amux/commit/7c5108ccbd187fd7590a9dfa0fa71ae6e464be4e)) - TudorAndrei
