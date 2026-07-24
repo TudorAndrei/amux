@@ -213,4 +213,5 @@ The native Rust picker keeps one row per tmux session. For sessions with
 multiple agents, the row targets the highest-priority agent pane. Search ranks
 and filters only the tmux session name; visible status, reason, cwd, pane, age,
 and agent details never contribute matches. It receives daemon updates while
-keyboard input remains responsive; `Ctrl-R` requests an immediate tmux redraw.
+keyboard input remains responsive; arrow keys, `j`/`k`, and `Ctrl-N`/`Ctrl-P`
+navigate results, while `Ctrl-R` requests an immediate tmux redraw.
