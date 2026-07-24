@@ -508,7 +508,6 @@ fn lazy_daemon_persists_events_and_serves_revisions() {
     let mut subscription = UnixStream::connect(state.join("amux.sock")).unwrap();
     subscription.write_all(br#"{"kind":"subscribe"}"#).unwrap();
     subscription.write_all(b"\n").unwrap();
-    subscription.shutdown(std::net::Shutdown::Write).unwrap();
     let mut subscription = BufReader::new(subscription);
     let mut initial = String::new();
     subscription.read_line(&mut initial).unwrap();
@@ -654,7 +653,6 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
     let mut subscription = UnixStream::connect(state.join("amux.sock")).unwrap();
     subscription.write_all(br#"{"kind":"subscribe"}"#).unwrap();
     subscription.write_all(b"\n").unwrap();
-    subscription.shutdown(std::net::Shutdown::Write).unwrap();
     let subscription = monitor_updates(subscription);
     let pane = String::from_utf8(
         Command::new("tmux")

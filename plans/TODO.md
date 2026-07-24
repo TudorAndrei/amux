@@ -22,10 +22,10 @@
 
 ## Phase 4: Make subscriptions finite and non-blocking
 
-- [ ] Release the shared mutex before subscription writes.
-- [ ] Detect closed/stalled subscribers and terminate their loops.
-- [ ] Add closed-client and healthy-update regressions.
-- [ ] Commit: `fix(daemon): reclaim idle subscriptions`
+- [x] Release the shared mutex before subscription writes.
+- [x] Detect closed/stalled subscribers and terminate their loops.
+- [x] Add closed-client and healthy-update regressions.
+- [x] Commit: `fix(daemon): reclaim idle subscriptions`
 
 ## Phase 5: Type the tmux topology boundary
 

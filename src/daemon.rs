@@ -4,7 +4,7 @@ use crate::ipc::{HookRequest, Request, Response};
 use crate::model::{SessionView, State};
 use crate::state;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
@@ -232,26 +232,44 @@ fn handle(
                 &mut stream,
                 &Response::state(revision, initial, topology, views, status),
             )?;
+            stream
+                .set_write_timeout(Some(Duration::from_secs(1)))
+                .map_err(|error| error.to_string())?;
+            reader
+                .get_mut()
+                .set_nonblocking(true)
+                .map_err(|error| error.to_string())?;
             loop {
                 thread::sleep(Duration::from_millis(50));
-                let guard = shared
-                    .lock()
-                    .map_err(|_| "daemon state lock poisoned".to_owned())?;
-                if guard.shutdown {
-                    return Ok(());
+                let mut probe = [0_u8; 1];
+                match reader.read(&mut probe) {
+                    Ok(0) => return Ok(()),
+                    Ok(_) => return Err("unexpected data from daemon subscriber".to_owned()),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(error) => return Err(error.to_string()),
                 }
-                if guard.revision != revision {
-                    revision = guard.revision;
-                    reply(
-                        &mut stream,
-                        &Response::state(
+                let response = {
+                    let guard = shared
+                        .lock()
+                        .map_err(|_| "daemon state lock poisoned".to_owned())?;
+                    if guard.shutdown {
+                        return Ok(());
+                    }
+                    if guard.revision == revision {
+                        None
+                    } else {
+                        revision = guard.revision;
+                        Some(Response::state(
                             revision,
                             guard.state.clone(),
                             guard.topology.clone(),
                             guard.views.clone(),
                             guard.status.clone(),
-                        ),
-                    )?;
+                        ))
+                    }
+                };
+                if let Some(response) = response {
+                    reply(&mut stream, &response)?;
                 }
             }
         }
@@ -429,4 +447,70 @@ fn context_from_request(request: &HookRequest) -> Option<crate::event::TmuxConte
         session: request.tmux_session.clone(),
         window: request.tmux_window.clone(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{BufRead, BufReader, Write};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+
+    fn shared() -> Arc<Mutex<Shared>> {
+        Arc::new(Mutex::new(Shared {
+            revision: 0,
+            state: State::initial(),
+            topology: crate::tmux::Topology::default(),
+            views: Vec::new(),
+            status: String::new(),
+            shutdown: false,
+            monitor_server: None,
+            monitor_stop: None,
+        }))
+    }
+
+    #[test]
+    fn subscription_exits_when_the_client_disconnects() {
+        let directory = std::env::temp_dir().join(format!(
+            "amux-daemon-subscription-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let socket = directory.join("daemon.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let config = Config {
+            state_dir: directory.clone(),
+            stale_seconds: 86_400,
+            hide_subagents: true,
+            use_color: false,
+        };
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            sender.send(handle(stream, &config, shared())).unwrap();
+        });
+        let mut client = UnixStream::connect(&socket).unwrap();
+        client.write_all(br#"{"kind":"subscribe"}"#).unwrap();
+        client.write_all(b"\n").unwrap();
+        {
+            let mut initial = String::new();
+            BufReader::new(client.try_clone().unwrap())
+                .read_line(&mut initial)
+                .unwrap();
+            assert_eq!(
+                serde_json::from_str::<Response>(&initial).unwrap().revision,
+                0
+            );
+        }
+        drop(client);
+        assert!(
+            receiver
+                .recv_timeout(Duration::from_secs(1))
+                .expect("subscription handler should exit promptly")
+                .is_ok()
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
 }
