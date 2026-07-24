@@ -2,6 +2,14 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.2.0](https://github.com/TudorAndrei/amux/compare/b6477d9c74305d70b38cd1f651896d9209fc2f2e..v0.2.0) - 2026-07-24
+#### Features
+- (**picker**) integrate nucleo session matching - ([b6477d9](https://github.com/TudorAndrei/amux/commit/b6477d9c74305d70b38cd1f651896d9209fc2f2e)) - TudorAndrei
+#### Bug Fixes
+- (**test**) wait for nucleo snapshots - ([a2d3a20](https://github.com/TudorAndrei/amux/commit/a2d3a20ee4dc54f12eef49e79889b8a380ef2ea7)) - TudorAndrei
+
+- - -
+
 ## [v0.1.2](https://github.com/TudorAndrei/amux/compare/a21e93951bc4dbbd64b3141cddc2813b0d57b0da..v0.1.2) - 2026-07-24
 #### Bug Fixes
 - (**tpm**) install matching native release - ([a21e939](https://github.com/TudorAndrei/amux/commit/a21e93951bc4dbbd64b3141cddc2813b0d57b0da)) - TudorAndrei
