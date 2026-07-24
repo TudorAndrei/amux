@@ -69,9 +69,12 @@ jobs:
       - id: release
         uses: cocogitto/cocogitto-action@v4.2.0
         with:
-          command: release
+          command: bump
+          args: --auto --skip-ci
           git-user: Cog Bot
           git-user-email: cog@users.noreply.github.com
+      - name: Push release commit and tag
+        run: git push origin HEAD:main --tags
 
   package-release:
     needs: prepare-release
