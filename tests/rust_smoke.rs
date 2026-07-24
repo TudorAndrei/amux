@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -61,15 +61,28 @@ fn wait_for_monitor_update(
     predicate: impl Fn(&Value) -> bool,
 ) -> Value {
     use std::io::BufRead;
-    for _ in 0..20 {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
         let mut line = String::new();
-        reader.read_line(&mut line).unwrap();
-        let response: Value = serde_json::from_str(&line).unwrap();
-        if predicate(&response) {
-            return response;
+        match reader.read_line(&mut line) {
+            Ok(0) => panic!("tmux monitor subscription closed"),
+            Ok(_) => {
+                let response: Value = serde_json::from_str(&line).unwrap();
+                if predicate(&response) {
+                    return response;
+                }
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) && Instant::now() < deadline =>
+            {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => panic!("failed to read tmux monitor update: {error}"),
         }
     }
-    panic!("timed out waiting for tmux monitor update");
 }
 
 fn fake_tmux(dir: &Path) -> PathBuf {
