@@ -2,13 +2,15 @@ use crate::config::Config;
 use crate::model::SessionView;
 use crate::sessions;
 use crate::state;
+use nucleo::Nucleo;
+use nucleo::pattern::{CaseMatching, Normalization};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
-use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Command;
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::Duration;
@@ -20,61 +22,7 @@ pub fn rows(config: &Config) -> Result<String, String> {
 }
 
 pub fn run(config: Config) -> Result<(), String> {
-    if fzf_available() {
-        return run_fzf(&config);
-    }
     run_native(config)
-}
-
-fn fzf_available() -> bool {
-    Command::new("fzf")
-        .arg("--version")
-        .output()
-        .is_ok_and(|output| output.status.success())
-}
-
-fn run_fzf(config: &Config) -> Result<(), String> {
-    let rows = rows(config)?;
-    if rows.is_empty() {
-        return Ok(());
-    }
-    let header = if config.use_color {
-        "amux   \x1b[31;1m▲ attention\x1b[0m  \x1b[32m● done\x1b[0m  \x1b[33m◐ running\x1b[0m  \x1b[38;5;244m○ offline\x1b[0m"
-    } else {
-        "amux   ▲ attention  ● done  ◐ running  ○ offline"
-    };
-    let mut picker = Command::new("fzf")
-        .args([
-            "--ansi",
-            "--reverse",
-            "--with-nth=4",
-            "--delimiter=\t",
-            "--nth=1",
-            "--bind=change:first",
-            "--header",
-            header,
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("could not start fzf: {error}"))?;
-    picker
-        .stdin
-        .take()
-        .ok_or_else(|| "fzf stdin was not piped".to_owned())?
-        .write_all(rows.as_bytes())
-        .map_err(|error| format!("could not send sessions to fzf: {error}"))?;
-    let output = picker
-        .wait_with_output()
-        .map_err(|error| format!("could not read fzf selection: {error}"))?;
-    if !output.status.success() {
-        return Ok(());
-    }
-    let selected = String::from_utf8_lossy(&output.stdout);
-    let mut fields = selected.trim_end().split('\t');
-    let session = fields.next().unwrap_or_default();
-    let pane = fields.next().unwrap_or_default();
-    crate::tmux::switch_client(session, pane)
 }
 
 fn run_native(config: Config) -> Result<(), String> {
@@ -83,6 +31,7 @@ fn run_native(config: Config) -> Result<(), String> {
     let mut terminal = ratatui::init();
     let outcome = loop {
         apply_updates(&mut app, &updates);
+        app.tick();
         terminal
             .draw(|frame| draw(frame, &mut app))
             .map_err(|error| error.to_string())?;
@@ -137,44 +86,109 @@ struct App {
     query: String,
     selected: Option<String>,
     list: ListState,
+    matcher: Nucleo<String>,
+    select_first_match: bool,
 }
 
 impl App {
     fn new(sessions: Vec<SessionView>) -> Self {
-        let selected = sessions.first().map(|session| session.session.clone());
-        let mut list = ListState::default();
-        if selected.is_some() {
-            list.select(Some(0));
-        }
-        Self {
+        let mut app = Self {
             sessions,
             query: String::new(),
-            selected,
-            list,
+            selected: None,
+            list: ListState::default(),
+            matcher: Nucleo::new(nucleo::Config::DEFAULT, Arc::new(|| ()), Some(1), 1),
+            select_first_match: true,
+        };
+        app.rebuild_matcher();
+        app
+    }
+
+    fn rebuild_matcher(&mut self) {
+        self.matcher.restart(true);
+        let injector = self.matcher.injector();
+        for session in &self.sessions {
+            injector.push(session.session.clone(), |name, columns| {
+                columns[0] = name.as_str().into();
+            });
         }
     }
+
     fn filtered(&self) -> Vec<&SessionView> {
-        self.sessions
-            .iter()
-            .filter(|session| fuzzy(&session.session, &self.query))
+        self.matcher
+            .snapshot()
+            .matched_items(..)
+            .filter_map(|item| {
+                self.sessions
+                    .iter()
+                    .find(|session| session.session == *item.data)
+            })
             .collect()
     }
+
+    fn tick(&mut self) {
+        let status = self.matcher.tick(0);
+        if status.changed {
+            self.sync_selection();
+        }
+    }
+
+    fn sync_selection(&mut self) {
+        let matched = self
+            .filtered()
+            .into_iter()
+            .map(|session| session.session.clone())
+            .collect::<Vec<_>>();
+        if matched.is_empty() {
+            self.selected = None;
+            self.list.select(None);
+            return;
+        }
+        let index = if self.select_first_match {
+            self.select_first_match = false;
+            0
+        } else {
+            self.selected
+                .as_ref()
+                .and_then(|id| matched.iter().position(|session| session == id))
+                .unwrap_or(0)
+        };
+        self.selected = Some(matched[index].clone());
+        self.list.select(Some(index));
+    }
+
     fn replace(&mut self, sessions: Vec<SessionView>) {
         self.sessions = sessions;
-        let filtered = self.filtered();
-        let index = self
-            .selected
-            .as_ref()
-            .and_then(|id| filtered.iter().position(|session| session.session == *id))
-            .unwrap_or(0);
-        self.selected = filtered.get(index).map(|session| session.session.clone());
-        self.list.select(self.selected.as_ref().map(|_| index));
+        if self.selected.as_ref().is_some_and(|selected| {
+            !self
+                .sessions
+                .iter()
+                .any(|session| session.session == *selected)
+        }) {
+            self.selected = None;
+            self.list.select(None);
+        }
+        self.rebuild_matcher();
     }
+
     fn reset_for_query(&mut self) {
-        let filtered = self.filtered();
-        self.selected = filtered.first().map(|session| session.session.clone());
-        self.list.select(self.selected.as_ref().map(|_| 0));
+        self.matcher.pattern.reparse(
+            0,
+            &self.query,
+            CaseMatching::Ignore,
+            Normalization::Smart,
+            false,
+        );
+        self.selected = None;
+        self.list.select(None);
+        self.select_first_match = true;
     }
+
+    fn set_query(&mut self, query: impl Into<String>) {
+        self.query = query.into();
+        self.reset_for_query();
+    }
+
     fn move_selection(&mut self, delta: isize) {
         let filtered = self.filtered();
         if filtered.is_empty() {
@@ -214,13 +228,15 @@ impl App {
                 None
             }
             KeyCode::Backspace => {
-                self.query.pop();
-                self.reset_for_query();
+                let mut query = self.query.clone();
+                query.pop();
+                self.set_query(query);
                 None
             }
             KeyCode::Char(character) if !modifiers.contains(KeyModifiers::CONTROL) => {
-                self.query.push(character);
-                self.reset_for_query();
+                let mut query = self.query.clone();
+                query.push(character);
+                self.set_query(query);
                 None
             }
             _ => None,
@@ -270,7 +286,7 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
         Paragraph::new(format!("{}█", app.query)).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("search session"),
+                .title("search session name"),
         ),
         query_area,
     );
@@ -313,15 +329,6 @@ fn detail_text(session: &SessionView) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-fn fuzzy(value: &str, query: &str) -> bool {
-    let value = value.to_ascii_lowercase();
-    let mut chars = value.chars();
-    query
-        .to_ascii_lowercase()
-        .chars()
-        .all(|needle| chars.by_ref().any(|candidate| candidate == needle))
 }
 
 fn render_rows(sessions: &[SessionView], color: bool) -> String {
@@ -402,27 +409,139 @@ mod tests {
         }
     }
 
+    fn settle(app: &mut App) {
+        for _ in 0..50 {
+            app.tick();
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    fn names(app: &App) -> Vec<&str> {
+        app.filtered()
+            .into_iter()
+            .map(|session| session.session.as_str())
+            .collect()
+    }
+
     #[test]
-    fn fuzzy_is_session_name_only() {
-        assert!(fuzzy("alpha-session", "aps"));
-        assert!(!fuzzy("alpha-session", "az"));
+    fn nucleo_ranks_exact_session_name_first() {
+        let mut app = App::new(vec![session("fabulous-oof"), session("foo")]);
+        app.set_query("foo");
+        settle(&mut app);
+
+        assert_eq!(names(&app).first(), Some(&"foo"));
+        assert_eq!(app.selected.as_deref(), Some("foo"));
+    }
+
+    #[test]
+    fn matcher_only_indexes_session_names() {
+        let mut non_matching = session("alpha");
+        non_matching.status = "notification".to_owned();
+        non_matching.reason = "notification".to_owned();
+        non_matching.cwd = "/notification".to_owned();
+        non_matching.pane = "%notification".to_owned();
+        let mut app = App::new(vec![non_matching, session("notifier")]);
+        app.set_query("noti");
+        settle(&mut app);
+
+        assert_eq!(names(&app), vec!["notifier"]);
     }
 
     #[test]
     fn query_change_selects_the_first_match() {
         let mut app = App::new(vec![session("alpha"), session("beta")]);
+        settle(&mut app);
         app.move_selection(1);
         assert_eq!(app.selected.as_deref(), Some("beta"));
         app.key(KeyCode::Char('a'), KeyModifiers::NONE);
+        settle(&mut app);
         assert_eq!(app.selected.as_deref(), Some("alpha"));
     }
 
     #[test]
     fn passive_update_preserves_a_valid_selection() {
         let mut app = App::new(vec![session("alpha"), session("beta")]);
+        settle(&mut app);
         app.move_selection(1);
         app.replace(vec![session("alpha"), session("beta"), session("gamma")]);
+        settle(&mut app);
         assert_eq!(app.selected.as_deref(), Some("beta"));
+    }
+
+    #[test]
+    fn removing_a_selected_session_never_keeps_a_stale_target() {
+        let mut app = App::new(vec![session("alpha"), session("beta")]);
+        settle(&mut app);
+        app.move_selection(1);
+        assert_eq!(app.selected.as_deref(), Some("beta"));
+
+        app.replace(vec![session("alpha")]);
+        settle(&mut app);
+
+        assert_eq!(app.selected.as_deref(), Some("alpha"));
+        assert_eq!(
+            app.key(KeyCode::Enter, KeyModifiers::NONE)
+                .flatten()
+                .map(|session| session.session),
+            Some("alpha".to_owned())
+        );
+    }
+
+    #[test]
+    fn empty_and_no_match_snapshots_clear_selection() {
+        let mut app = App::new(Vec::new());
+        settle(&mut app);
+        assert_eq!(names(&app), Vec::<&str>::new());
+        assert_eq!(app.selected, None);
+
+        app.replace(vec![session("alpha")]);
+        app.set_query("missing");
+        settle(&mut app);
+        assert_eq!(names(&app), Vec::<&str>::new());
+        assert_eq!(app.selected, None);
+    }
+
+    #[test]
+    fn matching_handles_case_unicode_spaces_and_hyphens() {
+        let sessions = vec![
+            session("CamelCase"),
+            session("東京-agent"),
+            session("client work"),
+            session("api-gateway"),
+        ];
+
+        let mut app = App::new(sessions.clone());
+        app.set_query("camel");
+        settle(&mut app);
+        assert_eq!(names(&app), vec!["CamelCase"]);
+
+        let mut app = App::new(sessions.clone());
+        app.set_query("東京");
+        settle(&mut app);
+        assert_eq!(names(&app), vec!["東京-agent"]);
+
+        let mut app = App::new(sessions.clone());
+        app.set_query("client work");
+        settle(&mut app);
+        assert_eq!(names(&app), vec!["client work"]);
+
+        let mut app = App::new(sessions);
+        app.set_query("api-gateway");
+        settle(&mut app);
+        assert_eq!(names(&app), vec!["api-gateway"]);
+    }
+
+    #[test]
+    fn backspace_reparses_a_non_empty_query() {
+        let mut app = App::new(vec![session("alpha"), session("beta")]);
+        app.key(KeyCode::Char('b'), KeyModifiers::NONE);
+        settle(&mut app);
+        assert_eq!(names(&app), vec!["beta"]);
+
+        app.key(KeyCode::Backspace, KeyModifiers::NONE);
+        settle(&mut app);
+        assert_eq!(names(&app), vec!["alpha", "beta"]);
+        assert_eq!(app.selected.as_deref(), Some("alpha"));
     }
 
     #[test]
@@ -437,6 +556,7 @@ mod tests {
                 .unwrap();
         });
         let mut app = App::new(vec![session("alpha"), session("beta")]);
+        settle(&mut app);
         let started = Instant::now();
         apply_updates(&mut app, &receiver);
         app.key(KeyCode::Down, KeyModifiers::NONE);
@@ -444,6 +564,7 @@ mod tests {
         assert_eq!(app.selected.as_deref(), Some("beta"));
         worker.join().unwrap();
         apply_updates(&mut app, &receiver);
+        settle(&mut app);
         assert_eq!(app.selected.as_deref(), Some("beta"));
     }
 }

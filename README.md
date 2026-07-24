@@ -73,9 +73,8 @@ workers. Set `AMUX_HIDE_SUBAGENTS=0` to show tmux-backed subagents again.
 
 Runtime requirements are tmux 3.2 or newer and GitHub CLI (`gh`). TPM is the
 supported installation and update path: it downloads the matching native
-release binary automatically. Rust and `jq` are never required at runtime.
-When `fzf` is installed, amux uses the classic reverse-list picker; otherwise
-it uses the built-in native picker.
+release binary automatically. Rust, `jq`, and `fzf` are never required at
+runtime. The picker is always the integrated native interface.
 
 Contributors can build from source with Rust 1.96 or newer:
 
@@ -211,6 +210,7 @@ Status indicators are colored by default in tmux and in the picker:
 Set `AMUX_COLOR=0`, `AMUX_PLAIN=1`, or `NO_COLOR=1` to use monochrome output.
 
 The native Rust picker keeps one row per tmux session. For sessions with
-multiple agents, the row targets the highest-priority agent pane while the
-session name remains the searchable field. It receives daemon updates while
+multiple agents, the row targets the highest-priority agent pane. Search ranks
+and filters only the tmux session name; visible status, reason, cwd, pane, age,
+and agent details never contribute matches. It receives daemon updates while
 keyboard input remains responsive; `Ctrl-R` requests an immediate tmux redraw.
