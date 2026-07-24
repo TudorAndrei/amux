@@ -2,6 +2,14 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.1.1](https://github.com/TudorAndrei/amux/compare/42eac7e82f9ba6b8e80e379fe9f8041cbe532759..v0.1.1) - 2026-07-24
+#### Bug Fixes
+- (**ci**) install Rust lint components with mise - ([7c5108c](https://github.com/TudorAndrei/amux/commit/7c5108ccbd187fd7590a9dfa0fa71ae6e464be4e)) - TudorAndrei
+- (**picker**) restore fzf and switch pane targets - ([42eac7e](https://github.com/TudorAndrei/amux/commit/42eac7e82f9ba6b8e80e379fe9f8041cbe532759)) - TudorAndrei
+- (**runtime**) migrate hooks and mise tasks - ([74cafd2](https://github.com/TudorAndrei/amux/commit/74cafd28d9891f09caa2a5e2283d674fec5d32bd)) - TudorAndrei
+
+- - -
+
 ## [v0.1.0](https://github.com/TudorAndrei/amux/compare/v0.0.0..v0.1.0) - 2026-07-24
 #### Features
 - replace amux shell runtime with native Rust (#1) - ([7495d0a](https://github.com/TudorAndrei/amux/commit/7495d0a093a1dca1f850852dbd9505261ea0c837)) - Tudor Andrei Dumitrascu
