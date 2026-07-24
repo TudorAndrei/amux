@@ -410,10 +410,17 @@ mod tests {
     }
 
     fn settle(app: &mut App) {
-        for _ in 0..50 {
-            app.tick();
-            thread::sleep(Duration::from_millis(2));
+        for _ in 0..100 {
+            let status = app.matcher.tick(10);
+            if status.changed {
+                app.sync_selection();
+            }
+            if !status.running && app.matcher.snapshot().item_count() == app.sessions.len() as u32 {
+                app.sync_selection();
+                return;
+            }
         }
+        panic!("Nucleo did not finish matching the current session snapshot");
     }
 
     fn names(app: &App) -> Vec<&str> {
