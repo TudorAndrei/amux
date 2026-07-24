@@ -962,6 +962,8 @@ fn tmux_plugin_loads_native_picker_and_status_commands() {
             .unwrap()
             .success()
     );
+    let plugin = Path::new(env!("CARGO_MANIFEST_DIR")).join("amux.tmux");
+    let legacy_status = plugin.parent().unwrap().join("scripts/status.sh");
     assert!(
         Command::new("tmux")
             .args(["-L", &socket_name, "set-option", "-g", "@amux-status", "on"])
@@ -969,7 +971,34 @@ fn tmux_plugin_loads_native_picker_and_status_commands() {
             .unwrap()
             .success()
     );
-    let plugin = Path::new(env!("CARGO_MANIFEST_DIR")).join("amux.tmux");
+    assert!(
+        Command::new("tmux")
+            .args([
+                "-L",
+                &socket_name,
+                "set-option",
+                "-g",
+                "@amux-status-command",
+                legacy_status.to_str().unwrap(),
+            ])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("tmux")
+            .args([
+                "-L",
+                &socket_name,
+                "set-option",
+                "-g",
+                "status-right",
+                &format!("#({}) host", legacy_status.display()),
+            ])
+            .status()
+            .unwrap()
+            .success()
+    );
     assert!(
         Command::new("tmux")
             .args(["-L", &socket_name, "run-shell", plugin.to_str().unwrap()])
@@ -1020,6 +1049,8 @@ fn tmux_plugin_loads_native_picker_and_status_commands() {
     )
     .unwrap();
     assert!(status_right.contains("bin/amux status"));
+    assert!(!status_right.contains("scripts/status.sh"));
+    assert!(status_right.contains("host"));
     let _ = Command::new("tmux")
         .args(["-L", &socket_name, "kill-server"])
         .status();

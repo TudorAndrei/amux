@@ -98,7 +98,7 @@ release workflow derives the next version, changelog, tag, and archives from
 that history. Run `make cog-check` to verify the local range.
 
 `make package` writes a deployable archive under `dist/` for the current host
-target. GitHub Actions also builds archives for macOS x86_64/arm64 and Linux
+target. GitHub Actions also builds archives for macOS arm64 and Linux
 x86_64/arm64.
 
 ## Daemon Lifecycle and Recovery
@@ -153,6 +153,20 @@ set -g @amux-status on
 ```
 
 Then reload tmux and run TPM install (`prefix + I`).
+
+To migrate an existing shell-based installation to a release archive, unpack
+the archive to its final path, then reload the plugin and rewrite hooks from
+that path:
+
+```bash
+tmux run-shell /path/to/amux-<version>-<target>/amux.tmux
+/path/to/amux-<version>-<target>/bin/amux install-hooks --write
+tmux refresh-client -S
+```
+
+Reloading replaces the previously registered amux status command and picker
+binding. The native runtime reuses the version-one state file, and starts its
+daemon lazily on the next hook event or picker launch.
 
 Load the plugin directly for local development:
 
