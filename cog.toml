@@ -1,0 +1,19 @@
+branch_whitelist = ["main"]
+ignore_merge_commits = true
+tag_prefix = "v"
+
+pre_bump_hooks = [
+  "cargo set-version {{version}}",
+  "printf '%s\\n' '{{version}}' > VERSION",
+  "cargo test --all-features",
+]
+
+[changelog]
+path = "CHANGELOG.md"
+template = "remote"
+remote = "github.com"
+owner = "TudorAndrei"
+repository = "amux"
+
+[commit_types]
+chore = { omit_from_changelog = true }

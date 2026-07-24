@@ -30,4 +30,3 @@ export const AmuxPlugin = async (ctx) => {
 }
 
 export default AmuxPlugin
-

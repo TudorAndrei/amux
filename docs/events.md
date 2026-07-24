@@ -8,6 +8,12 @@ bin/amux event --agent <agent> --event <event>
 
 The raw hook payload is passed on stdin and stored in `events.jsonl`.
 
+The Rust `install-hooks` command renders these templates with the absolute
+`bin/amux` path and merges duplicate-safe JSON entries. Use
+`bin/amux install-hooks --dry-run` to preview changes or `--write` to apply
+them; timestamped backups are created before existing configuration files are
+changed.
+
 ## Codex
 
 - `SessionStart` -> `running`
