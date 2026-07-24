@@ -222,6 +222,18 @@ fn handle(
             guard.revision += 1;
             reply(&mut stream, &Response::ok(guard.revision))
         }
+        Request::Clear => {
+            state::clear(config)?;
+            let mut guard = shared
+                .lock()
+                .map_err(|_| "daemon state lock poisoned".to_owned())?;
+            guard.state = State::initial();
+            guard.views =
+                crate::sessions::views_with_topology(config, &guard.state, &guard.topology);
+            guard.status = crate::render::status(config, &guard.views);
+            guard.revision += 1;
+            reply(&mut stream, &Response::ok(guard.revision))
+        }
         Request::Subscribe => {
             let (mut revision, initial, topology, views, status) = {
                 let guard = shared
@@ -274,6 +286,21 @@ pub fn send_event(config: &Config, request: HookRequest) -> Result<(), String> {
         },
     )
     .map_err(|error| error.to_string())?;
+    stream.write_all(b"\n").map_err(|error| error.to_string())?;
+    stream
+        .shutdown(std::net::Shutdown::Write)
+        .map_err(|error| error.to_string())?;
+    let mut response = String::new();
+    BufReader::new(stream)
+        .read_line(&mut response)
+        .map_err(|error| error.to_string())?;
+    let response: Response = serde_json::from_str(&response).map_err(|error| error.to_string())?;
+    response.error.map_or(Ok(()), Err)
+}
+
+pub fn clear(config: &Config) -> Result<(), String> {
+    let mut stream = UnixStream::connect(socket_path(config)).map_err(|error| error.to_string())?;
+    serde_json::to_writer(&mut stream, &Request::Clear).map_err(|error| error.to_string())?;
     stream.write_all(b"\n").map_err(|error| error.to_string())?;
     stream
         .shutdown(std::net::Shutdown::Write)

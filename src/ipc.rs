@@ -8,6 +8,7 @@ use serde_json::Value;
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Request {
     Event { request: Box<HookRequest> },
+    Clear,
     Subscribe,
     Ping,
     Shutdown,

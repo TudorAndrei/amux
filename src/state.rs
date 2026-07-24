@@ -71,6 +71,8 @@ pub fn write_event(
 }
 
 pub fn clear(config: &Config) -> Result<(), String> {
+    acquire(config)?;
+    let _lock = Lock(config);
     for path in [config.state_file(), config.events_file()] {
         if path.exists() {
             fs::remove_file(path).map_err(|error| error.to_string())?;

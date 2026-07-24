@@ -366,7 +366,9 @@ fn main() -> ExitCode {
             );
             Ok(0)
         }),
-        Commands::Clear => state::clear(&config).map(|_| 0),
+        Commands::Clear => daemon::clear(&config)
+            .or_else(|_| state::clear(&config))
+            .map(|_| 0),
         Commands::Picker { rows: false } => {
             let _ = start_daemon(&config);
             ui::run(config).map(|_| 0)

@@ -512,6 +512,29 @@ fn lazy_daemon_persists_events_and_serves_revisions() {
     let update: Value = serde_json::from_str(&update).unwrap();
     assert_eq!(update["revision"], 2);
     assert_eq!(update["state"]["records"].as_object().unwrap().len(), 2);
+    assert!(amux(&state).arg("clear").status().unwrap().success());
+    let mut cleared = String::new();
+    subscription.read_line(&mut cleared).unwrap();
+    let cleared: Value = serde_json::from_str(&cleared).unwrap();
+    assert_eq!(cleared["revision"], 3);
+    assert!(cleared["state"]["records"].as_object().unwrap().is_empty());
+    assert!(
+        daemon_request(&state, r#"{"kind":"status"}"#)["status"]
+            .as_str()
+            .unwrap()
+            .is_empty()
+    );
+    let listed: Value = serde_json::from_slice(
+        &amux(&state)
+            .args(["list", "--json"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    assert!(listed["records"].as_object().unwrap().is_empty());
+    assert!(!state.join("state.json").exists());
+    assert!(!state.join("events.jsonl").exists());
     assert_eq!(
         daemon_request(&state, r#"{"kind":"shutdown"}"#)["revision"],
         0
@@ -553,7 +576,7 @@ fn lazy_daemon_persists_events_and_serves_revisions() {
             .stdout,
     )
     .unwrap();
-    assert_eq!(recovered["records"].as_object().unwrap().len(), 3);
+    assert_eq!(recovered["records"].as_object().unwrap().len(), 1);
     let _ = daemon_request(&state, r#"{"kind":"shutdown"}"#);
     fs::remove_dir_all(state).unwrap();
 }
