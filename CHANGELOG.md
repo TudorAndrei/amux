@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.2.1](https://github.com/TudorAndrei/amux/compare/8cf1622178325fc3a8099b8dd5e37e7afccaf39f..v0.2.1) - 2026-07-24
+#### Bug Fixes
+- (**picker**) restore ctrl navigation - ([8cf1622](https://github.com/TudorAndrei/amux/commit/8cf1622178325fc3a8099b8dd5e37e7afccaf39f)) - TudorAndrei
+
+- - -
+
 ## [v0.2.0](https://github.com/TudorAndrei/amux/compare/b6477d9c74305d70b38cd1f651896d9209fc2f2e..v0.2.0) - 2026-07-24
 #### Features
 - (**picker**) integrate nucleo session matching - ([b6477d9](https://github.com/TudorAndrei/amux/commit/b6477d9c74305d70b38cd1f651896d9209fc2f2e)) - TudorAndrei
