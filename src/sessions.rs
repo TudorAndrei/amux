@@ -51,6 +51,38 @@ fn panes() -> Vec<Pane> {
         .lines().filter_map(|line| { let parts: Vec<_> = line.split('|').collect(); (parts.len() >= 6).then(|| Pane { session: parts[0].to_owned(), pane: parts[1].to_owned(), command: parts[2].to_owned(), title: parts[4].to_owned(), cwd: parts[5].to_owned() }) }).collect()
 }
 
+fn topology_sessions(topology: &crate::tmux::Topology) -> Vec<TmuxSession> {
+    topology
+        .sessions
+        .iter()
+        .filter_map(|line| {
+            let parts: Vec<_> = line.split('|').collect();
+            (parts.len() >= 4 && !parts[2].is_empty()).then(|| TmuxSession {
+                name: parts[2].to_owned(),
+                last_attached: parts[1].parse().unwrap_or(0),
+                attached: parts[3] == "1",
+            })
+        })
+        .collect()
+}
+
+fn topology_panes(topology: &crate::tmux::Topology) -> Vec<Pane> {
+    topology
+        .panes
+        .iter()
+        .filter_map(|line| {
+            let parts: Vec<_> = line.split('|').collect();
+            (parts.len() >= 8).then(|| Pane {
+                session: parts[1].to_owned(),
+                pane: parts[3].to_owned(),
+                command: parts[4].to_owned(),
+                title: parts[6].to_owned(),
+                cwd: parts[7].to_owned(),
+            })
+        })
+        .collect()
+}
+
 fn uuid_like(value: &str) -> bool {
     let bytes = value.as_bytes();
     bytes.len() == 36
@@ -144,6 +176,22 @@ fn as_agent(record: &Record, pane: Option<&Pane>, session: &str, live: bool) -> 
 
 pub fn views(config: &Config, state: &State) -> Vec<SessionView> {
     views_from(config, state, tmux_sessions(), panes())
+}
+
+/// Derive session rows from a daemon-owned tmux control snapshot. Unlike
+/// `views`, this performs no tmux subprocess work and is safe for UI and status
+/// cache updates.
+pub fn views_with_topology(
+    config: &Config,
+    state: &State,
+    topology: &crate::tmux::Topology,
+) -> Vec<SessionView> {
+    views_from(
+        config,
+        state,
+        topology_sessions(topology),
+        topology_panes(topology),
+    )
 }
 
 fn views_from(
@@ -281,4 +329,52 @@ pub fn list_records(config: &Config, state: &State) -> Vec<Record> {
             .reverse()
     });
     records
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+
+    #[test]
+    fn cached_topology_keeps_attached_sessions() {
+        let config = Config {
+            state_dir: PathBuf::new(),
+            stale_seconds: 86_400,
+            hide_subagents: true,
+            use_color: false,
+        };
+        let mut records = BTreeMap::new();
+        records.insert(
+            "codex:attached:%1".to_owned(),
+            Record {
+                agent: "codex".to_owned(),
+                tmux_session: "attached".to_owned(),
+                tmux_pane: "%1".to_owned(),
+                status: "attention".to_owned(),
+                attention: true,
+                updated_at: now(),
+                ..Record::default()
+            },
+        );
+        let topology = crate::tmux::Topology {
+            sessions: vec!["$0|42|attached|1".to_owned()],
+            panes: vec!["$0|attached|@0|%1|codex|1|codex|/tmp".to_owned()],
+            connected: true,
+            ..crate::tmux::Topology::default()
+        };
+        let views = views_with_topology(
+            &config,
+            &State {
+                version: 1,
+                records,
+            },
+            &topology,
+        );
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].session, "attached");
+        assert!(views[0].attached);
+        assert_eq!(views[0].status, "attention");
+    }
 }

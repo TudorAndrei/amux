@@ -1,6 +1,9 @@
 pub mod config;
+pub mod daemon;
 pub mod event;
+pub mod ipc;
 pub mod model;
 pub mod render;
 pub mod sessions;
 pub mod state;
+pub mod tmux;
