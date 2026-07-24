@@ -2,7 +2,10 @@ use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{
+    Mutex, MutexGuard,
+    atomic::{AtomicUsize, Ordering},
+};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -12,6 +15,15 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
+// tmux creates servers beneath a per-user shared directory, so tests that manage
+// real servers (or a long-lived daemon) cannot safely overlap.
+static REAL_SERVER_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+fn real_server_test_lock() -> MutexGuard<'static, ()> {
+    REAL_SERVER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 fn temp_dir(label: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!(
@@ -514,6 +526,7 @@ fn tmux_sessions_aggregate_agents_and_choose_the_highest_priority_pane() {
 #[test]
 #[cfg(unix)]
 fn lazy_daemon_persists_events_and_serves_revisions() {
+    let _lock = real_server_test_lock();
     let state = temp_dir("daemon");
     let mut command = Command::new(env!("CARGO_BIN_EXE_amux-rs"));
     command
@@ -658,6 +671,7 @@ fn lazy_daemon_persists_events_and_serves_revisions() {
 #[test]
 #[cfg(unix)]
 fn control_monitor_reconciles_an_isolated_tmux_server() {
+    let _lock = real_server_test_lock();
     use std::io::Write;
     let state = temp_dir("monitor");
     let socket_name = format!(
@@ -1040,6 +1054,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
 #[test]
 #[cfg(unix)]
 fn tmux_plugin_loads_native_picker_and_status_commands() {
+    let _lock = real_server_test_lock();
     let socket_name = format!(
         "amux-plugin-{}-{}",
         std::process::id(),
