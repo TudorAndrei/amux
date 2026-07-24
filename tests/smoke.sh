@@ -50,6 +50,15 @@ test -z "$(AMUX_COLOR=0 "$ROOT/bin/amux" status)"
 
 cat >"$FAKE_BIN/tmux" <<'SH'
 #!/usr/bin/env bash
+separator=$'\037'
+session() {
+    printf '%s%s%s%s%s\n' "$1" "$separator" "$2" "$separator" "$3"
+}
+pane() {
+    printf '%s%s%s%s%s%s%s%s%s%s%s\n' \
+        "$1" "$separator" "$2" "$separator" "$3" "$separator" \
+        "$4" "$separator" "$5" "$separator" "$6"
+}
 case "$1" in
     display-message)
         format="${!#}"
@@ -61,35 +70,35 @@ case "$1" in
         ;;
     list-sessions)
         if [ "${AMUX_FAKE_MULTI:-0}" = "1" ]; then
-            printf '500|multi-agent|0\n'
+            session 500 multi-agent 0
         elif [ "${AMUX_FAKE_STATUS_SESSIONS:-0}" = "1" ]; then
-            printf '400|attention-session|0\n'
-            printf '300|done-session|0\n'
-            printf '200|running-session|0\n'
-            printf '100|offline-session|0\n'
+            session 400 attention-session 0
+            session 300 done-session 0
+            session 200 running-session 0
+            session 100 offline-session 0
         else
-            printf '100|codex-tmux|0\n'
+            session 100 codex-tmux 0
         fi
         if [ "${AMUX_FAKE_EXTRA_SESSION:-0}" = "1" ]; then
-            printf '50|codex-offline|0\n'
+            session 50 codex-offline 0
         fi
         ;;
     list-panes)
         if [ "${AMUX_FAKE_MULTI:-0}" = "1" ]; then
-            printf 'multi-agent|%%20|codex|500|codex|/tmp/multi-codex\n'
-            printf 'multi-agent|%%21|claude|501|claude|/tmp/multi-claude\n'
+            pane multi-agent %20 codex 500 codex /tmp/multi-codex
+            pane multi-agent %21 claude 501 claude /tmp/multi-claude
         elif [ "${AMUX_FAKE_STATUS_SESSIONS:-0}" = "1" ]; then
-            printf 'attention-session|%%10|codex|400|codex|/tmp/attention\n'
-            printf 'done-session|%%11|codex|300|codex|/tmp/done\n'
-            printf 'running-session|%%12|codex|200|codex|/tmp/running\n'
-            printf 'offline-session|%%13|zsh|100|shell|/tmp/offline\n'
+            pane attention-session %10 codex 400 codex /tmp/attention
+            pane done-session %11 codex 300 codex /tmp/done
+            pane running-session %12 codex 200 codex /tmp/running
+            pane offline-session %13 zsh 100 shell /tmp/offline
         elif [ "${AMUX_FAKE_AGENT_LIVE:-0}" = "1" ]; then
-            printf 'codex-tmux|%%1|codex|200|codex|/tmp/codex\n'
+            pane codex-tmux %1 codex 200 codex /tmp/codex
         else
-            printf 'codex-tmux|%%2|zsh|200|shell|/tmp/shell\n'
+            pane codex-tmux %2 zsh 200 shell /tmp/shell
         fi
         if [ "${AMUX_FAKE_EXTRA_SESSION:-0}" = "1" ]; then
-            printf 'codex-offline|%%4|zsh|201|shell|/tmp/offline\n'
+            pane codex-offline %4 zsh 201 shell /tmp/offline
         fi
         ;;
     refresh-client)

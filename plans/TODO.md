@@ -36,21 +36,21 @@
 
 ## Verification
 
-- [ ] `mise run check` exits 0 after every phase.
-- [ ] `mise run package-check` exits 0 after every phase.
-- [ ] `tests/rust_smoke.rs` covers direct and daemon-backed `clear`, an
+- [x] `mise run check` exits 0 after every phase.
+- [x] `mise run package-check` exits 0 after every phase.
+- [x] `tests/rust_smoke.rs` covers direct and daemon-backed `clear`, an
       outside-tmux daemon later used inside tmux, and normal subscription
       updates.
-- [ ] Manual smoke test: clear a live daemon, then verify `status`, `sessions`,
+- [x] Manual smoke test: clear a live daemon, then verify `status`, `sessions`,
       `picker --rows`, and `list --json` all show an empty state.
-- [ ] Manual smoke test: start a daemon outside tmux, enter tmux, send an event,
+- [x] Manual smoke test: start a daemon outside tmux, enter tmux, send an event,
       and verify the picker receives the session.
-- [ ] No behavior change in documented session ordering, pane switching,
+- [x] No behavior change in documented session ordering, pane switching,
       `sessions --json`, or `picker --rows` output.
 
 ## Review
 
-- [ ] Code reviewed.
-- [ ] `plans/PLAN.md` updated if approach changed during implementation.
-- [ ] All phase commits are clean and use the planned messages.
-- [ ] This TODO and `plans/README.md` statuses are updated.
+- [x] Code reviewed.
+- [x] `plans/PLAN.md` updated if approach changed during implementation.
+- [x] All phase commits are clean and use the planned messages.
+- [x] This TODO and `plans/README.md` statuses are updated.

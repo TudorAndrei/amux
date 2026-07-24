@@ -12,11 +12,13 @@ identified in the audit.
 
 The implementation is split into independently releasable commits. First make
 `clear` a serialized daemon state transition, then allow an existing daemon to
-attach to the tmux server supplied by a later in-tmux client. In parallel,
-harden the direct write path's permissions. Subscription replies will snapshot
-shared state before I/O and detect disconnected clients. Finally, parse tmux
-data once into typed session and pane records, using a delimiter not accepted in
-the supported tmux metadata and strict field validation.
+attach to the tmux server supplied by a later in-tmux client. The client also
+supplies its session, window, and pane so the first event is associated before
+the asynchronous monitor takes its initial snapshot. In parallel, harden the
+direct write path's permissions. Subscription replies snapshot shared state
+before I/O and detect disconnected clients. Finally, parse tmux data once into
+typed session and pane records, using the ASCII unit separator and strict field
+validation.
 
 No public CLI subcommands, persisted `State` schema, picker row format, agent
 classification rules, or new third-party dependencies are in scope.
