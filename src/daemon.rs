@@ -452,9 +452,6 @@ fn context_from_request(request: &HookRequest) -> Option<crate::event::TmuxConte
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Write};
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    static NEXT: AtomicUsize = AtomicUsize::new(0);
 
     fn shared() -> Arc<Mutex<Shared>> {
         Arc::new(Mutex::new(Shared {
@@ -471,26 +468,17 @@ mod tests {
 
     #[test]
     fn subscription_exits_when_the_client_disconnects() {
-        let directory = std::env::temp_dir().join(format!(
-            "amux-daemon-subscription-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir_all(&directory).unwrap();
-        let socket = directory.join("daemon.sock");
-        let listener = UnixListener::bind(&socket).unwrap();
+        let (mut client, server) = UnixStream::pair().unwrap();
         let config = Config {
-            state_dir: directory.clone(),
+            state_dir: PathBuf::new(),
             stale_seconds: 86_400,
             hide_subagents: true,
             use_color: false,
         };
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            sender.send(handle(stream, &config, shared())).unwrap();
+            sender.send(handle(server, &config, shared())).unwrap();
         });
-        let mut client = UnixStream::connect(&socket).unwrap();
         client.write_all(br#"{"kind":"subscribe"}"#).unwrap();
         client.write_all(b"\n").unwrap();
         {
@@ -510,6 +498,5 @@ mod tests {
                 .expect("subscription handler should exit promptly")
                 .is_ok()
         );
-        fs::remove_dir_all(directory).unwrap();
     }
 }
