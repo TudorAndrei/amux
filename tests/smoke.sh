@@ -25,6 +25,8 @@ SH
 chmod +x "$FAKE_BIN/tmux"
 export PATH="$FAKE_BIN:$PATH"
 
+test "$(AMUX_ROOT=/tmp "$ROOT/bin/amux" --version)" = "amux $(tr -d '\n' <"$ROOT/VERSION")"
+
 "$ROOT/bin/amux" event --agent codex <"$ROOT/tests/fixtures/codex-permission.json"
 "$ROOT/bin/amux" event --agent claude <"$ROOT/tests/fixtures/claude-stop.json"
 "$ROOT/bin/amux" event --agent opencode <"$ROOT/tests/fixtures/opencode-idle.json"

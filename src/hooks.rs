@@ -152,6 +152,13 @@ fn merge_hooks(path: &Path, fragment: &Value, name: &str, mode: Mode) -> Result<
         .or_insert_with(|| Value::Object(Map::new()))
         .as_object_mut()
         .ok_or_else(|| format!("{}.hooks must be a JSON object", path.display()))?;
+    // Replace commands from any previous amux checkout. The absolute launcher
+    // path is intentionally not part of the match: source, TPM, and release
+    // archives all install from different locations.
+    for value in hooks.values_mut() {
+        remove_matching(value);
+    }
+    hooks.retain(|_, value| !value.as_array().is_some_and(Vec::is_empty));
     for (event, additions) in source {
         let target = hooks
             .entry(event.clone())
@@ -199,13 +206,13 @@ fn remove_pi_extension(path: &Path, extension: &Path, mode: Mode) -> Result<(), 
     write_json(path, &document, "Pi settings", mode)
 }
 
-fn remove_hooks(path: &Path, launcher: &str, name: &str, mode: Mode) -> Result<(), String> {
+fn remove_hooks(path: &Path, _launcher: &str, name: &str, mode: Mode) -> Result<(), String> {
     if !path.exists() {
         return Ok(());
     }
     let mut document = read_json(path)?;
     if let Some(hooks) = document.get_mut("hooks") {
-        remove_matching(hooks, launcher);
+        remove_matching(hooks);
         if hooks.as_object().is_some_and(|object| object.is_empty()) {
             document
                 .as_object_mut()
@@ -216,25 +223,22 @@ fn remove_hooks(path: &Path, launcher: &str, name: &str, mode: Mode) -> Result<(
     write_json(path, &document, name, mode)
 }
 
-fn remove_matching(value: &mut Value, launcher: &str) -> bool {
+fn remove_matching(value: &mut Value) -> bool {
     match value {
         Value::Array(items) => {
-            items.retain_mut(|item| !remove_matching(item, launcher));
+            items.retain_mut(|item| !remove_matching(item));
             false
         }
         Value::Object(object) => {
-            let is_amux_command =
-                object
-                    .get("command")
-                    .and_then(Value::as_str)
-                    .is_some_and(|command| {
-                        command.contains(launcher) && command.contains(" event --agent ")
-                    });
+            let is_amux_command = object
+                .get("command")
+                .and_then(Value::as_str)
+                .is_some_and(|command| command.contains("bin/amux event --agent "));
             if is_amux_command {
                 return true;
             }
             for child in object.values_mut() {
-                remove_matching(child, launcher);
+                remove_matching(child);
             }
             object
                 .get("hooks")
@@ -342,6 +346,27 @@ mod tests {
             removed["hooks"]["Stop"][0]["hooks"][0]["command"],
             "other command"
         );
+        fs::remove_dir_all(paths.home).unwrap();
+    }
+
+    #[test]
+    fn install_replaces_stale_launchers_and_tool_use_hooks() {
+        let paths = paths();
+        let claude = paths.home.join(".claude/settings.json");
+        fs::create_dir_all(claude.parent().unwrap()).unwrap();
+        fs::write(
+            &claude,
+            r#"{"hooks":{"PostToolUse":[{"hooks":[{"type":"command","command":"/old/amux/bin/amux event --agent claude --event PostToolUse"}]}],"Stop":[{"hooks":[{"type":"command","command":"/old/amux/bin/amux event --agent claude --event Stop"}]}]}}"#,
+        )
+        .unwrap();
+        install_at(&paths, Mode::Write).unwrap();
+        let installed: Value = serde_json::from_str(&fs::read_to_string(&claude).unwrap()).unwrap();
+        assert!(installed["hooks"].get("PostToolUse").is_none());
+        let stop = installed["hooks"]["Stop"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap();
+        assert!(stop.contains("/bin/amux event --agent claude --event Stop"));
+        assert!(!stop.starts_with("/old/"));
         fs::remove_dir_all(paths.home).unwrap();
     }
 

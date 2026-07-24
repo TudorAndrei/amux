@@ -23,11 +23,4 @@ export default function amux(pi: ExtensionAPI) {
     await send("session_start", event, ctx)
   })
 
-  pi.on("tool_call", async (event, ctx) => {
-    await send("tool_call", event, ctx)
-  })
-
-  pi.on("tool_result", async (event, ctx) => {
-    await send("tool_result", event, ctx)
-  })
 }
