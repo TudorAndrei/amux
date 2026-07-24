@@ -13,10 +13,5 @@ for candidate in "$AMUX_ROOT/target/release/amux-rs" "$AMUX_ROOT/target/debug/am
 	fi
 done
 
-if command -v cargo >/dev/null 2>&1; then
-	cargo build --manifest-path "$AMUX_ROOT/Cargo.toml" --release >&2
-	exec "$AMUX_ROOT/target/release/amux-rs" "$@"
-fi
-
-printf '%s\n' 'amux: Rust runtime is not installed; install a release binary or build with Cargo' >&2
+printf '%s\n' 'amux: native binary is missing; install a release archive or run cargo build --release --bin amux-rs before loading the tmux plugin' >&2
 exit 1

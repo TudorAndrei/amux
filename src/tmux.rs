@@ -66,6 +66,29 @@ pub fn server_from_env() -> Option<PathBuf> {
         })
 }
 
+/// Move the invoking tmux client directly to a pane (or, if no pane is known,
+/// to a session). A pane target makes tmux change the session, window, and
+/// active pane atomically, which is required when the picker runs in a popup.
+pub fn switch_client(session: &str, pane: &str) -> Result<(), String> {
+    let target = if pane.is_empty() { session } else { pane };
+    if target.is_empty() {
+        return Ok(());
+    }
+    let output = std::process::Command::new("tmux")
+        .args(["switch-client", "-t", target])
+        .output()
+        .map_err(|error| format!("could not switch tmux client: {error}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    Err(if detail.is_empty() {
+        format!("tmux could not switch to {target}")
+    } else {
+        format!("tmux could not switch to {target}: {detail}")
+    })
+}
+
 pub fn spawn(
     stop: Arc<AtomicBool>,
     server: Option<PathBuf>,

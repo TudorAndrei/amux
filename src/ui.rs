@@ -7,7 +7,8 @@ use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::Duration;
@@ -19,6 +20,64 @@ pub fn rows(config: &Config) -> Result<String, String> {
 }
 
 pub fn run(config: Config) -> Result<(), String> {
+    if fzf_available() {
+        return run_fzf(&config);
+    }
+    run_native(config)
+}
+
+fn fzf_available() -> bool {
+    Command::new("fzf")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+fn run_fzf(config: &Config) -> Result<(), String> {
+    let rows = rows(config)?;
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let header = if config.use_color {
+        "amux   \x1b[31;1m▲ attention\x1b[0m  \x1b[32m● done\x1b[0m  \x1b[33m◐ running\x1b[0m  \x1b[38;5;244m○ offline\x1b[0m"
+    } else {
+        "amux   ▲ attention  ● done  ◐ running  ○ offline"
+    };
+    let mut picker = Command::new("fzf")
+        .args([
+            "--ansi",
+            "--reverse",
+            "--with-nth=4",
+            "--delimiter=\t",
+            "--nth=1",
+            "--bind=change:first",
+            "--header",
+            header,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("could not start fzf: {error}"))?;
+    picker
+        .stdin
+        .take()
+        .ok_or_else(|| "fzf stdin was not piped".to_owned())?
+        .write_all(rows.as_bytes())
+        .map_err(|error| format!("could not send sessions to fzf: {error}"))?;
+    let output = picker
+        .wait_with_output()
+        .map_err(|error| format!("could not read fzf selection: {error}"))?;
+    if !output.status.success() {
+        return Ok(());
+    }
+    let selected = String::from_utf8_lossy(&output.stdout);
+    let mut fields = selected.trim_end().split('\t');
+    let session = fields.next().unwrap_or_default();
+    let pane = fields.next().unwrap_or_default();
+    crate::tmux::switch_client(session, pane)
+}
+
+fn run_native(config: Config) -> Result<(), String> {
     let (updates, initial) = updates(config.clone());
     let mut app = App::new(initial);
     let mut terminal = ratatui::init();
@@ -37,16 +96,7 @@ pub fn run(config: Config) -> Result<(), String> {
     };
     ratatui::restore();
     if let Some(session) = outcome {
-        if !session.pane.is_empty() {
-            let _ = Command::new("tmux")
-                .args(["select-pane", "-t", &session.pane])
-                .status();
-        }
-        if !session.session.is_empty() {
-            let _ = Command::new("tmux")
-                .args(["switch-client", "-t", &session.session])
-                .status();
-        }
+        crate::tmux::switch_client(&session.session, &session.pane)?;
     }
     Ok(())
 }
