@@ -246,6 +246,17 @@ fn handle(
                     Ok(0) => return Ok(()),
                     Ok(_) => return Err("unexpected data from daemon subscriber".to_owned()),
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::BrokenPipe
+                                | std::io::ErrorKind::ConnectionAborted
+                                | std::io::ErrorKind::ConnectionReset
+                                | std::io::ErrorKind::NotConnected
+                        ) =>
+                    {
+                        return Ok(());
+                    }
                     Err(error) => return Err(error.to_string()),
                 }
                 let response = {
