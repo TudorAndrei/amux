@@ -135,7 +135,8 @@ fn parse_control_sessions(lines: &[String]) -> Result<Vec<TmuxSession>, String> 
     lines
         .iter()
         .map(|line| {
-            let fields: Vec<_> = line.split(FIELD_SEPARATOR).collect();
+            let decoded = decode_control_line(line);
+            let fields: Vec<_> = decoded.split(FIELD_SEPARATOR).collect();
             if fields.len() != 4 || fields[2].is_empty() {
                 return Err(format!("invalid tmux control session record: {line:?}"));
             }
@@ -173,7 +174,8 @@ fn parse_control_panes(lines: &[String]) -> Result<Vec<Pane>, String> {
     lines
         .iter()
         .map(|line| {
-            let fields: Vec<_> = line.split(FIELD_SEPARATOR).collect();
+            let decoded = decode_control_line(line);
+            let fields: Vec<_> = decoded.split(FIELD_SEPARATOR).collect();
             if fields.len() != 8 {
                 return Err(format!("invalid tmux control pane record: {line:?}"));
             }
@@ -187,6 +189,15 @@ fn parse_control_panes(lines: &[String]) -> Result<Vec<Pane>, String> {
             })
         })
         .collect()
+}
+
+fn decode_control_line(line: &str) -> std::borrow::Cow<'_, str> {
+    if line.contains(FIELD_SEPARATOR) {
+        return std::borrow::Cow::Borrowed(line);
+    }
+    String::from_utf8_lossy(&tmuxctl::decode_output(line.as_bytes()))
+        .into_owned()
+        .into()
 }
 
 pub fn server_from_env() -> Option<PathBuf> {
@@ -415,6 +426,19 @@ mod tests {
         assert_eq!(panes[0].command, "codex|agent");
         assert_eq!(panes[0].title, "title|detail");
         assert_eq!(panes[0].cwd, "/tmp/a|b");
+    }
+
+    #[test]
+    fn control_parser_decodes_separators_escaped_by_older_tmux() {
+        let sessions = parse_control_sessions(&[r"$1\0371\037linux\0371".to_owned()]).unwrap();
+        let panes = parse_control_panes(&[
+            r"$1\037linux\037@1\037%1\037codex\0371\037title\134detail\037/tmp".to_owned(),
+        ])
+        .unwrap();
+
+        assert_eq!(sessions[0].name, "linux");
+        assert_eq!(panes[0].session, "linux");
+        assert_eq!(panes[0].title, r"title\detail");
     }
 
     #[test]
