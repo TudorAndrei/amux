@@ -79,50 +79,76 @@ fn daemon_request(state: &Path, request: &str) -> Value {
     serde_json::from_str(&line).unwrap()
 }
 
+/// A daemon subscription plus the daemon's captured stderr, so a closed stream
+/// reports why it closed instead of collapsing every cause into one message.
 #[cfg(unix)]
-fn wait_for_monitor_update(
-    updates: &std::sync::mpsc::Receiver<Value>,
-    predicate: impl Fn(&Value) -> bool,
-) -> Value {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let mut last = None;
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        match updates.recv_timeout(remaining) {
-            Ok(response) if predicate(&response) => return response,
-            Ok(response) => last = Some(response),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                panic!("timed out waiting for tmux monitor update: {last:?}");
+struct MonitorSubscription {
+    updates: std::sync::mpsc::Receiver<Result<Value, String>>,
+    daemon_log: PathBuf,
+}
+
+#[cfg(unix)]
+impl MonitorSubscription {
+    fn wait_for(&self, predicate: impl Fn(&Value) -> bool) -> Value {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut last = None;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match self.updates.recv_timeout(remaining) {
+                Ok(Ok(response)) if predicate(&response) => return response,
+                Ok(Ok(response)) => last = Some(response),
+                Ok(Err(reason)) => panic!(
+                    "tmux monitor subscription closed: {reason}\nlast update: {last:?}\n{}",
+                    self.daemon_stderr()
+                ),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => panic!(
+                    "timed out waiting for tmux monitor update: {last:?}\n{}",
+                    self.daemon_stderr()
+                ),
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => panic!(
+                    "tmux monitor reader thread stopped\n{}",
+                    self.daemon_stderr()
+                ),
             }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                panic!("tmux monitor subscription closed");
-            }
+        }
+    }
+
+    fn daemon_stderr(&self) -> String {
+        let log = fs::read_to_string(&self.daemon_log).unwrap_or_default();
+        if log.trim().is_empty() {
+            "daemon stderr: <empty>".to_owned()
+        } else {
+            format!("daemon stderr:\n{log}")
         }
     }
 }
 
 #[cfg(unix)]
-fn monitor_updates(stream: UnixStream) -> std::sync::mpsc::Receiver<Value> {
+fn monitor_updates(stream: UnixStream, daemon_log: PathBuf) -> MonitorSubscription {
     use std::io::{BufRead, BufReader};
-    let (sender, receiver) = std::sync::mpsc::channel();
+    let (sender, updates) = std::sync::mpsc::channel();
     thread::spawn(move || {
         let mut reader = BufReader::new(stream);
         loop {
             let mut line = String::new();
-            match reader.read_line(&mut line) {
-                Ok(0) | Err(_) => return,
+            let message = match reader.read_line(&mut line) {
+                Ok(0) => Err("daemon closed the stream (EOF)".to_owned()),
+                Err(error) => Err(format!("socket read error: {error}")),
                 Ok(_) => match serde_json::from_str(&line) {
-                    Ok(response) => {
-                        if sender.send(response).is_err() {
-                            return;
-                        }
-                    }
-                    Err(_) => return,
+                    Ok(response) => Ok(response),
+                    Err(error) => Err(format!("undecodable response {line:?}: {error}")),
                 },
+            };
+            let closed = message.is_err();
+            if sender.send(message).is_err() || closed {
+                return;
             }
         }
     });
-    receiver
+    MonitorSubscription {
+        updates,
+        daemon_log,
+    }
 }
 
 fn fake_tmux(dir: &Path) -> PathBuf {
@@ -720,13 +746,14 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
     )
     .unwrap();
     let socket = socket.trim().to_owned();
+    let daemon_log = state.join("daemon.log");
     let mut daemon = Command::new(env!("CARGO_BIN_EXE_amux-rs"));
     daemon
         .arg("daemon")
         .env("AMUX_STATE_DIR", &state)
         .env_remove("TMUX")
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stderr(Stdio::from(fs::File::create(&daemon_log).unwrap()));
     let mut daemon = daemon.spawn().unwrap();
     for _ in 0..40 {
         if state.join("amux.sock").exists() {
@@ -737,7 +764,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
     let mut subscription = UnixStream::connect(state.join("amux.sock")).unwrap();
     subscription.write_all(br#"{"kind":"subscribe"}"#).unwrap();
     subscription.write_all(b"\n").unwrap();
-    let subscription = monitor_updates(subscription);
+    let subscription = monitor_updates(subscription, daemon_log);
     let pane = String::from_utf8(
         tmux_command(&tmux_tmpdir)
             .args([
@@ -767,7 +794,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
         .write_all(br#"{"session_id":"monitor-codex"}"#)
         .unwrap();
     assert!(hook.wait_with_output().unwrap().status.success());
-    wait_for_monitor_update(&subscription, |response| {
+    subscription.wait_for(|response| {
         response["topology"]["connected"] == true
             && response["topology"]["sessions"]
                 .as_array()
@@ -854,7 +881,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
             .unwrap()
             .success()
     );
-    wait_for_monitor_update(&subscription, |response| {
+    subscription.wait_for(|response| {
         response["topology"]["sessions"]
             .as_array()
             .is_some_and(|rows| {
@@ -934,7 +961,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
             .unwrap()
             .success()
     );
-    wait_for_monitor_update(&subscription, |response| {
+    subscription.wait_for(|response| {
         response["topology"]["panes"]
             .as_array()
             .is_some_and(|rows| rows.len() >= 2)
@@ -946,7 +973,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
             .unwrap()
             .success()
     );
-    wait_for_monitor_update(&subscription, |response| {
+    subscription.wait_for(|response| {
         response["topology"]["sessions"]
             .as_array()
             .is_some_and(|rows| {
@@ -968,7 +995,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
             .unwrap()
             .success()
     );
-    wait_for_monitor_update(&subscription, |response| {
+    subscription.wait_for(|response| {
         response["topology"]["sessions"]
             .as_array()
             .is_some_and(|rows| {
@@ -1011,7 +1038,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
             .unwrap()
             .success()
     );
-    wait_for_monitor_update(&subscription, |response| {
+    subscription.wait_for(|response| {
         response["topology"]["panes"]
             .as_array()
             .is_some_and(|rows| {
@@ -1026,7 +1053,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
             .unwrap()
             .success()
     );
-    wait_for_monitor_update(&subscription, |response| {
+    subscription.wait_for(|response| {
         response["topology"]["sessions"]
             .as_array()
             .is_some_and(|rows| {
@@ -1042,9 +1069,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
             .unwrap()
             .success()
     );
-    wait_for_monitor_update(&subscription, |response| {
-        response["topology"]["connected"] == false
-    });
+    subscription.wait_for(|response| response["topology"]["connected"] == false);
     assert!(
         tmux_command(&tmux_tmpdir)
             .args(["-L", &socket_name, "new-session", "-d", "-s", "recovered"])
@@ -1052,7 +1077,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
             .unwrap()
             .success()
     );
-    wait_for_monitor_update(&subscription, |response| {
+    subscription.wait_for(|response| {
         response["topology"]["connected"] == true
             && response["topology"]["sessions"]
                 .as_array()

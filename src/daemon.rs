@@ -14,6 +14,23 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+/// How often an idle subscription wakes to look for a new revision.
+const POLL_INTERVAL: Duration = Duration::from_millis(50);
+/// How long a broadcast may block before the subscriber is treated as dead.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// A socket timeout surfaces as `WouldBlock` on Linux and `TimedOut` on macOS;
+/// `Interrupted` means the syscall was cut short by a signal. None of them say
+/// anything about the peer, so all three mean "nothing to read yet".
+fn would_block(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::WouldBlock
+            | std::io::ErrorKind::TimedOut
+            | std::io::ErrorKind::Interrupted
+    )
+}
+
 pub fn socket_path(config: &Config) -> PathBuf {
     config.state_dir.join("amux.sock")
 }
@@ -82,12 +99,15 @@ pub fn run(config: Config) -> Result<(), String> {
                 let config = config.clone();
                 let shared = Arc::clone(&shared);
                 thread::spawn(move || {
-                    let _ = handle(stream, &config, shared);
+                    if let Err(error) = handle(stream, &config, shared) {
+                        eprintln!("amux daemon: client connection failed: {error}");
+                    }
                 });
             }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(10))
-            }
+            Err(error) if would_block(&error) => thread::sleep(Duration::from_millis(10)),
+            // A connection aborted between the client's connect and this
+            // accept says nothing about the listener, so keep serving.
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionAborted => {}
             Err(error) => return Err(error.to_string()),
         }
     }
@@ -100,9 +120,12 @@ pub fn run(config: Config) -> Result<(), String> {
     Ok(())
 }
 
+/// Write one response as a single framed line. Serializing into memory first
+/// keeps a failed write from leaving a half-decodable record on the socket.
 fn reply(stream: &mut UnixStream, response: &Response) -> Result<(), String> {
-    serde_json::to_writer(&mut *stream, response).map_err(|error| error.to_string())?;
-    stream.write_all(b"\n").map_err(|error| error.to_string())?;
+    let mut line = serde_json::to_vec(response).map_err(|error| error.to_string())?;
+    line.push(b'\n');
+    stream.write_all(&line).map_err(|error| error.to_string())?;
     stream.flush().map_err(|error| error.to_string())
 }
 
@@ -233,19 +256,23 @@ fn handle(
                 &Response::state(revision, initial, topology, views, status),
             )?;
             stream
-                .set_write_timeout(Some(Duration::from_secs(1)))
+                .set_write_timeout(Some(WRITE_TIMEOUT))
                 .map_err(|error| error.to_string())?;
+            // The read half is a `try_clone()` of the write half, so both share
+            // one file description: `set_nonblocking()` here would also make
+            // broadcasts non-blocking and truncate them with `EWOULDBLOCK`. A
+            // read timeout is a socket option that only applies to reads, so it
+            // paces this loop without touching the write half.
             reader
                 .get_mut()
-                .set_nonblocking(true)
+                .set_read_timeout(Some(POLL_INTERVAL))
                 .map_err(|error| error.to_string())?;
             loop {
-                thread::sleep(Duration::from_millis(50));
                 let mut probe = [0_u8; 1];
                 match reader.read(&mut probe) {
                     Ok(0) => return Ok(()),
                     Ok(_) => return Err("unexpected data from daemon subscriber".to_owned()),
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(error) if would_block(&error) => {}
                     Err(error)
                         if matches!(
                             error.kind(),
@@ -475,6 +502,62 @@ mod tests {
             monitor_server: None,
             monitor_stop: None,
         }))
+    }
+
+    fn subscriber_config() -> Config {
+        Config {
+            state_dir: PathBuf::new(),
+            stale_seconds: 86_400,
+            hide_subagents: true,
+            use_color: false,
+        }
+    }
+
+    /// A broadcast larger than the socket buffer must arrive as one intact
+    /// line. The read half is a `try_clone()` of the write half, so marking it
+    /// non-blocking used to make the write half non-blocking too and cut the
+    /// record short with `EWOULDBLOCK` (`os error 11` on Linux).
+    #[test]
+    fn a_large_broadcast_reaches_the_subscriber_intact() {
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let shared = shared();
+        let published = Arc::clone(&shared);
+        thread::spawn(move || {
+            let _ = handle(server, &subscriber_config(), shared);
+        });
+        client.write_all(br#"{"kind":"subscribe"}"#).unwrap();
+        client.write_all(b"\n").unwrap();
+        let mut reader = BufReader::new(client.try_clone().unwrap());
+        let mut initial = String::new();
+        reader.read_line(&mut initial).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Response>(&initial).unwrap().revision,
+            0
+        );
+        {
+            let mut guard = published.lock().unwrap();
+            for index in 0..2_000 {
+                guard.state.records.insert(
+                    format!("codex:session-{index}"),
+                    crate::model::Record {
+                        agent: "codex".to_owned(),
+                        cwd: "/tmp/amux-subscriber-broadcast".to_owned(),
+                        ..crate::model::Record::default()
+                    },
+                );
+            }
+            guard.revision = 1;
+        }
+        let mut update = String::new();
+        reader.read_line(&mut update).unwrap();
+        assert!(
+            update.len() > 256 * 1024,
+            "the broadcast should exceed a socket buffer: {} bytes",
+            update.len()
+        );
+        let update: Response = serde_json::from_str(&update).expect("a complete broadcast");
+        assert_eq!(update.revision, 1);
+        assert_eq!(update.state.unwrap().records.len(), 2_000);
     }
 
     #[test]
