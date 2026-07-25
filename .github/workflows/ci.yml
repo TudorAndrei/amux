@@ -70,8 +70,6 @@ jobs:
         with:
           command: bump
           args: --auto --skip-ci
-          git-user: Cog Bot
-          git-user-email: cog@users.noreply.github.com
       - name: Push release commit and tag
         run: git push origin HEAD:main --tags
 
