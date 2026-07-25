@@ -36,7 +36,9 @@ fn temp_dir(label: &str) -> PathBuf {
 }
 
 fn tmux_temp_dir(label: &str) -> PathBuf {
-    let path = Path::new("/private/tmp").join(format!(
+    // Keep tmux's Unix socket path short on macOS while using the standard
+    // temporary directory shared by all supported Unix runners.
+    let path = Path::new("/tmp").join(format!(
         "amux-{label}-{}-{}",
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
@@ -1148,6 +1150,10 @@ fn tmux_plugin_loads_native_picker_and_status_commands() {
     assert!(
         picker.contains("bin/amux picker"),
         "unexpected picker binding: {picker}"
+    );
+    assert!(
+        picker.contains("AMUX_TMUX_CLIENT=#{client_name}"),
+        "picker does not preserve its invoking client: {picker}"
     );
     let status_command = String::from_utf8(
         tmux_command(&tmux_tmpdir)

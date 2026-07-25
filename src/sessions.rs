@@ -224,7 +224,11 @@ fn views_from(
             attention: status == "attention",
             agent_count: agents.len(),
             live_agent_count: agents.iter().filter(|agent| agent.live).count(),
-            pane: target.map(|agent| agent.pane.clone()).unwrap_or_default(),
+            pane: agents
+                .iter()
+                .find(|agent| agent.live)
+                .map(|agent| agent.pane.clone())
+                .unwrap_or_default(),
             reason: target.map(|agent| agent.reason.clone()).unwrap_or_default(),
             cwd: target.map(|agent| agent.cwd.clone()).unwrap_or_default(),
             updated_at,
@@ -312,5 +316,57 @@ mod tests {
         assert_eq!(views[0].session, "attached|pipe");
         assert!(views[0].attached);
         assert_eq!(views[0].status, "attention");
+    }
+
+    #[test]
+    fn offline_session_does_not_target_a_stale_agent_pane() {
+        let config = Config {
+            state_dir: PathBuf::new(),
+            stale_seconds: 86_400,
+            hide_subagents: true,
+            use_color: false,
+        };
+        let mut records = BTreeMap::new();
+        records.insert(
+            "codex:shell:%gone".to_owned(),
+            Record {
+                agent: "codex".to_owned(),
+                tmux_session: "shell".to_owned(),
+                tmux_pane: "%gone".to_owned(),
+                status: "done".to_owned(),
+                updated_at: now(),
+                ..Record::default()
+            },
+        );
+        let topology = crate::tmux::Topology {
+            sessions: vec![crate::tmux::TmuxSession {
+                id: "$1".to_owned(),
+                name: "shell".to_owned(),
+                last_attached: 42,
+                attached: false,
+            }],
+            panes: vec![crate::tmux::Pane {
+                session: "shell".to_owned(),
+                pane: "%live".to_owned(),
+                command: "zsh".to_owned(),
+                cwd: "/tmp".to_owned(),
+                ..crate::tmux::Pane::default()
+            }],
+            connected: true,
+            ..crate::tmux::Topology::default()
+        };
+
+        let views = views_with_topology(
+            &config,
+            &State {
+                version: 1,
+                records,
+            },
+            &topology,
+        );
+
+        assert_eq!(views[0].status, "offline");
+        assert_eq!(views[0].live_agent_count, 0);
+        assert_eq!(views[0].pane, "");
     }
 }

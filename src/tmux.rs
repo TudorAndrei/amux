@@ -38,6 +38,7 @@ pub struct Pane {
 }
 
 const FIELD_SEPARATOR: char = '\u{1f}';
+const INVOKING_CLIENT_ENV: &str = "AMUX_TMUX_CLIENT";
 
 trait TopologyProvider {
     fn snapshot(&self) -> Pin<Box<dyn Future<Output = Result<Topology, String>> + '_>>;
@@ -204,23 +205,52 @@ pub fn server_from_env() -> Option<PathBuf> {
 /// to a session). A pane target makes tmux change the session, window, and
 /// active pane atomically, which is required when the picker runs in a popup.
 pub fn switch_client(session: &str, pane: &str) -> Result<(), String> {
-    let target = if pane.is_empty() { session } else { pane };
-    if target.is_empty() {
+    let targets = switch_targets(session, pane);
+    if targets.is_empty() {
         return Ok(());
     }
-    let output = std::process::Command::new("tmux")
-        .args(["switch-client", "-t", target])
-        .output()
-        .map_err(|error| format!("could not switch tmux client: {error}"))?;
-    if output.status.success() {
-        return Ok(());
+    let client = env::var(INVOKING_CLIENT_ENV)
+        .ok()
+        .filter(|client| !client.is_empty());
+    let mut failure = None;
+    for target in targets {
+        let output = switch_client_command(target, client.as_deref())
+            .output()
+            .map_err(|error| format!("could not switch tmux client: {error}"))?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        failure = Some(if detail.is_empty() {
+            format!("tmux could not switch to {target}")
+        } else {
+            format!("tmux could not switch to {target}: {detail}")
+        });
     }
-    let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-    Err(if detail.is_empty() {
-        format!("tmux could not switch to {target}")
+    Err(failure.expect("a non-empty switch target"))
+}
+
+fn switch_targets<'a>(session: &'a str, pane: &'a str) -> Vec<&'a str> {
+    if pane.is_empty() {
+        (!session.is_empty())
+            .then_some(session)
+            .into_iter()
+            .collect()
+    } else if session.is_empty() || session == pane {
+        vec![pane]
     } else {
-        format!("tmux could not switch to {target}: {detail}")
-    })
+        vec![pane, session]
+    }
+}
+
+fn switch_client_command(target: &str, client: Option<&str>) -> std::process::Command {
+    let mut command = std::process::Command::new("tmux");
+    command.arg("switch-client");
+    if let Some(client) = client {
+        command.args(["-c", client]);
+    }
+    command.args(["-t", target]);
+    command
 }
 
 pub fn spawn(
@@ -385,5 +415,22 @@ mod tests {
         assert_eq!(panes[0].command, "codex|agent");
         assert_eq!(panes[0].title, "title|detail");
         assert_eq!(panes[0].cwd, "/tmp/a|b");
+    }
+
+    #[test]
+    fn switch_targets_the_client_that_opened_the_picker() {
+        let command = switch_client_command("%9", Some("/dev/ttys001"));
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(args, ["switch-client", "-c", "/dev/ttys001", "-t", "%9"]);
+    }
+
+    #[test]
+    fn switch_falls_back_to_the_session_when_a_pane_is_stale() {
+        assert_eq!(switch_targets("shell", "%gone"), ["%gone", "shell"]);
+        assert_eq!(switch_targets("shell", ""), ["shell"]);
     }
 }
