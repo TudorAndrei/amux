@@ -2,6 +2,14 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.2.3](https://github.com/TudorAndrei/amux/compare/9e06840c38468d3a0d4ca407ff4637e279f2a3e8..v0.2.3) - 2026-07-25
+#### Bug Fixes
+- (**picker**) resolve the invoking tmux client from tmux - ([975be68](https://github.com/TudorAndrei/amux/commit/975be68f5590e755327339f73bbf95e914fb7982)) - TudorAndrei
+#### Continuous Integration
+- stop attributing release commits to a real account - ([9e06840](https://github.com/TudorAndrei/amux/commit/9e06840c38468d3a0d4ca407ff4637e279f2a3e8)) - TudorAndrei
+
+- - -
+
 ## [v0.2.2](https://github.com/TudorAndrei/amux/compare/4999187bd34402c055024587d9bb9c9b4b47af07..v0.2.2) - 2026-07-25
 #### Bug Fixes
 - (**daemon**) keep subscriber broadcasts blocking - ([cf717b7](https://github.com/TudorAndrei/amux/commit/cf717b724a71d7be93248c627665253ab8bae1f1)) - TudorAndrei
