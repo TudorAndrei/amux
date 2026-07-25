@@ -2,6 +2,26 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.2.2](https://github.com/TudorAndrei/amux/compare/4999187bd34402c055024587d9bb9c9b4b47af07..v0.2.2) - 2026-07-25
+#### Bug Fixes
+- (**daemon**) keep subscriber broadcasts blocking - ([cf717b7](https://github.com/TudorAndrei/amux/commit/cf717b724a71d7be93248c627665253ab8bae1f1)) - TudorAndrei
+- (**daemon**) reclaim idle subscriptions - ([aab8858](https://github.com/TudorAndrei/amux/commit/aab8858841183e1154e9c795cb2536a406ca2e20)) - TudorAndrei
+- (**daemon**) attach monitor from tmux clients - ([b25286c](https://github.com/TudorAndrei/amux/commit/b25286cf3b04dfaa6d6cd2e9f01431728922bd03)) - TudorAndrei
+- (**picker**) reliably switch all tmux sessions - ([daa7e80](https://github.com/TudorAndrei/amux/commit/daa7e8031c5b3c86e53c2cf6133398ee43ebdda7)) - TudorAndrei
+- (**state**) protect fallback event storage - ([d1463c6](https://github.com/TudorAndrei/amux/commit/d1463c652e061f38d659d79c645620c663b059e4)) - TudorAndrei
+- (**state**) coordinate clear with daemon state - ([4999187](https://github.com/TudorAndrei/amux/commit/4999187bd34402c055024587d9bb9c9b4b47af07)) - TudorAndrei
+- (**tmux**) stabilize control subscriptions - ([387e500](https://github.com/TudorAndrei/amux/commit/387e5002b09947fcb8fe1c7578d0791380e3c404)) - TudorAndrei
+- (**tmux**) decode escaped control records - ([f688932](https://github.com/TudorAndrei/amux/commit/f688932b024328b634cb9d1d17d4ecff3a1b5886)) - TudorAndrei
+#### Tests
+- (**daemon**) avoid filesystem subscription fixture - ([7d7d7ec](https://github.com/TudorAndrei/amux/commit/7d7d7ec7957bd5b5ea3f1320a74c98a9f836f463)) - TudorAndrei
+- (**tmux**) isolate socket directories - ([72ec5f7](https://github.com/TudorAndrei/amux/commit/72ec5f7e2d573b086aed4ed17d1a78204500e9cb)) - TudorAndrei
+- (**tmux**) serialize real server fixtures - ([79ab726](https://github.com/TudorAndrei/amux/commit/79ab7261f8b2c6973ff72066788d174a3836b0e0)) - TudorAndrei
+- (**tmux**) cover typed topology fixtures - ([811ad13](https://github.com/TudorAndrei/amux/commit/811ad13c6cb32fd520354eebb7191031b34e4ecb)) - TudorAndrei
+#### Refactoring
+- (**tmux**) type topology snapshots - ([e4972c7](https://github.com/TudorAndrei/amux/commit/e4972c732b7a63a0c2295cb71baceb9e1551c908)) - TudorAndrei
+
+- - -
+
 ## [v0.2.1](https://github.com/TudorAndrei/amux/compare/8cf1622178325fc3a8099b8dd5e37e7afccaf39f..v0.2.1) - 2026-07-24
 #### Bug Fixes
 - (**picker**) restore ctrl navigation - ([8cf1622](https://github.com/TudorAndrei/amux/commit/8cf1622178325fc3a8099b8dd5e37e7afccaf39f)) - TudorAndrei
