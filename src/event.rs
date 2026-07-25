@@ -21,7 +21,7 @@ fn raw_string(raw: &Value, paths: &[&[&str]]) -> String {
     String::new()
 }
 
-fn tmux_value(format: &str, pane: &str) -> String {
+pub(crate) fn tmux_value(format: &str, pane: &str) -> String {
     if env::var_os("TMUX").is_none() {
         return String::new();
     }

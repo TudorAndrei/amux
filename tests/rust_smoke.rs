@@ -1176,9 +1176,11 @@ fn tmux_plugin_loads_native_picker_and_status_commands() {
         picker.contains("bin/amux picker"),
         "unexpected picker binding: {picker}"
     );
+    // tmux passes `-e` values through verbatim, so a client format there would
+    // reach the picker as the literal string and every switch would fail.
     assert!(
-        picker.contains("AMUX_TMUX_CLIENT=#{client_name}"),
-        "picker does not preserve its invoking client: {picker}"
+        !picker.contains("AMUX_TMUX_CLIENT"),
+        "picker binding must not pass an unexpanded client format: {picker}"
     );
     let status_command = String::from_utf8(
         tmux_command(&tmux_tmpdir)

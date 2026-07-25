@@ -26,8 +26,9 @@ if [ "$amux_key" != "A" ]; then
 	*"$CURRENT_DIR/bin/amux picker"* | *"$CURRENT_DIR/scripts/picker.sh"*) tmux unbind-key A ;;
 	esac
 fi
+# tmux does not expand formats in `display-popup -e`, so the invoking client
+# cannot be passed in as an environment variable. The picker asks tmux for it.
 tmux bind-key "$amux_key" display-popup \
-	-e "AMUX_TMUX_CLIENT=#{client_name}" \
 	-w "$popup_width" -h "$popup_height" -E "$CURRENT_DIR/bin/amux picker"
 
 next_key="$(tmux show-option -gqv @amux-next-attention-key)"

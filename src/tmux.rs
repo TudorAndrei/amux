@@ -210,25 +210,49 @@ pub fn switch_client(session: &str, pane: &str) -> Result<(), String> {
     if targets.is_empty() {
         return Ok(());
     }
-    let client = env::var(INVOKING_CLIENT_ENV)
-        .ok()
-        .filter(|client| !client.is_empty());
+    let client = invoking_client();
     let mut failure = None;
-    for target in targets {
-        let output = switch_client_command(target, client.as_deref())
-            .output()
-            .map_err(|error| format!("could not switch tmux client: {error}"))?;
-        if output.status.success() {
-            return Ok(());
+    // Every target is tried against the resolved client first, then without a
+    // client at all, so a client that tmux no longer knows cannot strand the
+    // picker without switching anything.
+    for client in [client.as_deref(), None] {
+        for target in &targets {
+            let output = switch_client_command(target, client)
+                .output()
+                .map_err(|error| format!("could not switch tmux client: {error}"))?;
+            if output.status.success() {
+                return Ok(());
+            }
+            let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            failure = Some(if detail.is_empty() {
+                format!("tmux could not switch to {target}")
+            } else {
+                format!("tmux could not switch to {target}: {detail}")
+            });
         }
-        let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        failure = Some(if detail.is_empty() {
-            format!("tmux could not switch to {target}")
-        } else {
-            format!("tmux could not switch to {target}: {detail}")
-        });
+        if client.is_none() {
+            break;
+        }
     }
     Err(failure.expect("a non-empty switch target"))
+}
+
+/// Identify the tmux client that opened the picker.
+///
+/// `display-popup -e` does not expand format strings, so the environment can
+/// hold a literal `#{client_name}`. Ask tmux directly whenever the environment
+/// does not carry a usable client name; inside a popup tmux resolves the
+/// request against the session the invoking client is attached to.
+fn invoking_client() -> Option<String> {
+    env::var(INVOKING_CLIENT_ENV)
+        .ok()
+        .and_then(|client| usable_client(&client))
+        .or_else(|| usable_client(&crate::event::tmux_value("#{client_name}", "")))
+}
+
+fn usable_client(client: &str) -> Option<String> {
+    let client = client.trim();
+    (!client.is_empty() && !client.contains("#{")).then(|| client.to_owned())
 }
 
 fn switch_targets<'a>(session: &'a str, pane: &'a str) -> Vec<&'a str> {
@@ -443,6 +467,30 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(args, ["switch-client", "-c", "/dev/ttys001", "-t", "%9"]);
+    }
+
+    #[test]
+    fn an_unexpanded_client_format_is_never_used_as_a_target() {
+        // `display-popup -e` passes its value through verbatim, so the
+        // environment can hold the format string itself.
+        assert_eq!(usable_client("#{client_name}"), None);
+        assert_eq!(usable_client(""), None);
+        assert_eq!(usable_client("   "), None);
+        assert_eq!(
+            usable_client("/dev/ttys001").as_deref(),
+            Some("/dev/ttys001")
+        );
+    }
+
+    #[test]
+    fn switch_without_a_client_targets_tmux_directly() {
+        let command = switch_client_command("%9", None);
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(args, ["switch-client", "-t", "%9"]);
     }
 
     #[test]
