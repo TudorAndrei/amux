@@ -192,6 +192,7 @@ fn handle(
         }
         Request::Event { request } => {
             let request = *request;
+            let should_refresh = request.tmux_server.is_some();
             attach_monitor(config, &shared, request.tmux_server.clone());
             let tmux = context_for_known_pane(&shared, &request.tmux_pane)
                 .or_else(|| context_from_request(&request))
@@ -234,7 +235,9 @@ fn handle(
             if write.over_compact_threshold {
                 schedule_compaction(config.clone(), Arc::clone(&shared), retain_keys);
             }
-            schedule_refresh(Arc::clone(&shared), server);
+            if should_refresh {
+                schedule_refresh(Arc::clone(&shared), server);
+            }
             reply(&mut stream, &Response::ok(revision))
         }
         Request::Clear => {
