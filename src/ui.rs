@@ -15,6 +15,11 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::Duration;
 
+/// Nucleo recommends a small wait here so its worker can publish a fresh
+/// snapshot. A zero-duration tick can keep a newly opened picker empty while
+/// the worker is still acquiring its lock.
+const MATCHER_TICK_TIMEOUT_MS: u64 = 10;
+
 pub fn rows(config: &Config) -> Result<String, String> {
     let views = crate::daemon::cached_views(config)
         .or_else(|_| state::load(config).map(|state| sessions::views(config, &state)))?;
@@ -127,7 +132,7 @@ impl App {
     }
 
     fn tick(&mut self) {
-        let status = self.matcher.tick(0);
+        let status = self.matcher.tick(MATCHER_TICK_TIMEOUT_MS);
         if status.changed {
             self.sync_selection();
         }
@@ -472,6 +477,16 @@ mod tests {
         assert_eq!(app.selected.as_deref(), Some("beta"));
         app.key(KeyCode::Char('a'), KeyModifiers::NONE);
         settle(&mut app);
+        assert_eq!(app.selected.as_deref(), Some("alpha"));
+    }
+
+    #[test]
+    fn initial_sessions_are_visible_after_the_first_interactive_tick() {
+        let mut app = App::new(vec![session("alpha"), session("beta")]);
+
+        app.tick();
+
+        assert_eq!(names(&app), vec!["alpha", "beta"]);
         assert_eq!(app.selected.as_deref(), Some("alpha"));
     }
 
