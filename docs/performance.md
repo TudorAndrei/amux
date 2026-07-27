@@ -37,3 +37,22 @@ the short-lived hook client process and socket request.
 The figures above compare the former shell path with equivalent native work.
 They intentionally do not treat tmux's own status redraw interval or terminal
 paint timing as an amux latency measurement.
+
+## Codex activity-hook cost
+
+This measured the pre-change native commit `81ad313` against the current
+release binary on the same Darwin arm64 host. Each run used a warm daemon,
+an isolated tmux server, one warm-up `PreToolUse`, and fifty `PostToolUse`
+submissions for the same pane.
+
+| Version | 50 hooks | Per hook | `events.jsonl` bytes | Log lines |
+| --- | ---: | ---: | ---: | ---: |
+| Before | 1.25 s | 25.0 ms | 18,154 | 51 |
+| After | 0.56 s | 11.2 ms | 710 | 2 |
+
+Before this change each hook client spawned two `tmux display-message`
+lookups plus `tmux refresh-client`; the daemon path now sends only `TMUX_PANE`,
+uses its persistent topology snapshot, and coalesces refreshes. The remaining
+two log lines are the real status transitions (`PreToolUse → running` and
+`PostToolUse → running` after a reason change); repeated equivalent activity
+is deliberately not history.
