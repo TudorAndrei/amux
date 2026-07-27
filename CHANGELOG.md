@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.2.4](https://github.com/TudorAndrei/amux/compare/81ad313dede469eb10f407110ac246fb3266d269..v0.2.4) - 2026-07-27
+#### Bug Fixes
+- (**picker**) render sessions on startup - ([81ad313](https://github.com/TudorAndrei/amux/commit/81ad313dede469eb10f407110ac246fb3266d269)) - TudorAndrei
+
+- - -
+
 ## [v0.2.3](https://github.com/TudorAndrei/amux/compare/9e06840c38468d3a0d4ca407ff4637e279f2a3e8..v0.2.3) - 2026-07-25
 #### Bug Fixes
 - (**picker**) resolve the invoking tmux client from tmux - ([975be68](https://github.com/TudorAndrei/amux/commit/975be68f5590e755327339f73bbf95e914fb7982)) - TudorAndrei
