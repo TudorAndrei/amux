@@ -130,7 +130,10 @@ fn cmd_event(config: &Config, args: EventArgs) -> Result<(), String> {
     }
     let raw: Value =
         serde_json::from_str(&source).map_err(|_| "event input is not valid JSON".to_owned())?;
-    let tmux = event::current_tmux_context();
+    // The daemon already owns a live tmux topology. Passing just the pane id
+    // avoids two `tmux display-message` processes for every hook. The direct
+    // fallback still resolves the full context below.
+    let tmux_pane = env::var("TMUX_PANE").unwrap_or_default();
     let hook_request = ipc::HookRequest {
         agent: args.agent.clone(),
         event: args.event.clone(),
@@ -142,9 +145,9 @@ fn cmd_event(config: &Config, args: EventArgs) -> Result<(), String> {
             .ok()
             .and_then(|path| path.into_os_string().into_string().ok())
             .unwrap_or_default(),
-        tmux_pane: tmux.pane,
-        tmux_session: tmux.session,
-        tmux_window: tmux.window,
+        tmux_pane,
+        tmux_session: String::new(),
+        tmux_window: String::new(),
         tmux_server: tmux::server_from_env(),
     };
     let written_by_daemon = if env::var_os("AMUX_NO_DAEMON").is_none() {
@@ -170,9 +173,9 @@ fn cmd_event(config: &Config, args: EventArgs) -> Result<(), String> {
             .unwrap_or_default();
         event_fields.insert("key".to_owned(), Value::String(key.clone()));
         let event_log = Value::Object(event_fields);
-        state::write_event(config, key, record, &event_log, timestamp)?;
+        let _ = state::write_event(config, key, record, &event_log, timestamp)?;
+        refresh_tmux();
     }
-    refresh_tmux();
     Ok(())
 }
 
@@ -269,6 +272,15 @@ fn cmd_doctor(config: &Config) -> i32 {
     } else {
         println!("daemon socket: not running");
         println!("monitor: unavailable until a daemon is started");
+    }
+    match hooks::drift() {
+        Ok(drifts) if drifts.is_empty() => println!("hooks: installed templates match"),
+        Ok(drifts) => {
+            for drift in drifts {
+                println!("hooks: {drift}; run `amux install-hooks --write`");
+            }
+        }
+        Err(error) => println!("hooks: could not inspect installed hooks ({error})"),
     }
     if failure { 1 } else { 0 }
 }

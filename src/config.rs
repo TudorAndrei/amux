@@ -5,6 +5,8 @@ use std::path::PathBuf;
 pub struct Config {
     pub state_dir: PathBuf,
     pub stale_seconds: i64,
+    pub events_per_session: usize,
+    pub events_compact_bytes: u64,
     pub hide_subagents: bool,
     pub use_color: bool,
 }
@@ -25,6 +27,14 @@ impl Config {
             .ok()
             .and_then(|value| value.parse().ok())
             .unwrap_or(86_400);
+        let events_per_session = env::var("AMUX_EVENTS_PER_SESSION")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(200);
+        let events_compact_bytes = env::var("AMUX_EVENTS_COMPACT_BYTES")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(8 * 1024 * 1024);
         let hide_subagents = !matches!(
             env::var("AMUX_HIDE_SUBAGENTS").as_deref(),
             Ok("0" | "false" | "FALSE" | "no" | "NO" | "off" | "OFF")
@@ -35,6 +45,8 @@ impl Config {
         Self {
             state_dir,
             stale_seconds,
+            events_per_session,
+            events_compact_bytes,
             hide_subagents,
             use_color,
         }
@@ -48,5 +60,11 @@ impl Config {
     }
     pub fn lock_dir(&self) -> PathBuf {
         self.state_dir.join("state.lock")
+    }
+    pub fn compacting_events_file(&self) -> PathBuf {
+        self.state_dir.join("events.jsonl.compacting")
+    }
+    pub fn retained_events_file(&self) -> PathBuf {
+        self.state_dir.join("events.jsonl.retained")
     }
 }

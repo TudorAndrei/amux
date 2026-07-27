@@ -24,8 +24,15 @@ ${XDG_STATE_HOME:-$HOME/.local/state}/amux/state.json
 ${XDG_STATE_HOME:-$HOME/.local/state}/amux/events.jsonl
 ```
 
-The cached `state.json` is optimized for tmux status and picker rendering. The
-append-only `events.jsonl` file is for debugging hook input and normalization.
+The cached `state.json` is optimized for tmux status and picker rendering.
+`events.jsonl` is a bounded transition log for debugging hook normalization:
+unchanged repeated events are not appended. The daemon retains at most
+`${AMUX_EVENTS_PER_SESSION:-200}` events for each
+`agent:tmux_session:pane` key, drops keys that have expired from state, and
+compacts once it reaches `${AMUX_EVENTS_COMPACT_BYTES:-8388608}` bytes. Set
+`AMUX_EVENTS_PER_SESSION=0` to disable daemon compaction. Stored hook payloads
+are capped at 4 KiB (with short strings and shallow containers) so a single
+event cannot defeat retention.
 The state directory is owner-only (`0700`), and both files are owner-readable
 and writable (`0600`), including daemon-less fallback writes. State writes are
 serialized so hooks arriving at the same time cannot overwrite one another.
@@ -39,7 +46,7 @@ Each state record contains:
 | `tmux_session` | tmux session name when the hook runs inside tmux |
 | `tmux_pane` | tmux pane id when available |
 | `cwd` | Working directory reported by the hook or current process |
-| `status` | `running`, `attention`, `done`, or `unknown` |
+| `status` | `running`, `attention`, `done`, `offline`, or `unknown` |
 | `attention` | Boolean flag for records that should be surfaced first |
 | `reason` | Short reason shown in tmux UI |
 | `last_event` | Last normalized hook event name |
@@ -55,7 +62,8 @@ Initial normalization is conservative:
 
 - permission, approval, notification, idle, ask, and waiting events set
   `attention=true`
-- stop, end, idle, done, and complete events map to `done` unless they are also
+- session-end events map to `offline`; stop, end, idle, done, and complete
+  events map to `done` unless they are also
   attention events
 - all other hook activity maps to `running`
 
@@ -106,9 +114,11 @@ tmux status segment. If it is unavailable, hook events use a locked one-shot
 write and the next event starts a fresh daemon.
 
 Use `bin/amux doctor` to inspect the selected binary, tmux version, state-file
-compatibility, socket permissions, and monitor connection. A stale socket is
+compatibility, socket permissions, monitor connection, and Codex/Claude hook
+drift. A stale socket is
 recovered automatically when a daemon starts; an invalid state file is reported
-by `doctor` without being overwritten.
+by `doctor` without being overwritten. If doctor reports hook drift after an
+upgrade, run `bin/amux install-hooks --write` to install the current mappings.
 
 ## Development
 
@@ -135,10 +145,13 @@ Install global hooks:
 bin/amux install-hooks --write
 ```
 
-amux only installs lifecycle hooks: session start, prompt submission,
-permission/notification, and stop. It deliberately does not install
-`PreToolUse` or `PostToolUse` hooks, so individual tool calls never add amux
-tracking output to an agent conversation.
+Codex installs explicit activity hooks for session start, prompt submission,
+pre/post tool use, pre/post compaction, permission requests, turn stop, and
+session end. Its `SessionStart` matcher is `startup|resume|clear`; compaction is
+tracked by dedicated hooks instead. `Stop` is turn-scoped: a tool-less next
+turn can briefly remain `done` because Codex provides no turn-start hook. Re-run
+`bin/amux install-hooks --write` after upgrading; `bin/amux doctor` reports
+installed Codex and Claude hook drift.
 
 The Rust installer writes timestamped backups before replacing existing global
 config files. Hook assets live under `hooks/` and are rendered with the absolute

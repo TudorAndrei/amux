@@ -245,6 +245,114 @@ fn event(state: &Path, agent: &str, extra: &[&str], input: Vec<u8>) {
 }
 
 #[test]
+fn rendered_codex_hook_commands_produce_the_declared_statuses() {
+    use std::io::Write;
+
+    let state = temp_dir("rendered-codex-hooks");
+    let home = temp_dir("rendered-codex-home");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let install = amux(&state)
+        .env("HOME", &home)
+        .env("AMUX_ROOT", root)
+        .args(["install-hooks", "--write"])
+        .output()
+        .unwrap();
+    assert!(install.status.success());
+    let hooks: Value =
+        serde_json::from_slice(&fs::read(home.join(".codex/hooks.json")).unwrap()).unwrap();
+    let expected = [
+        ("SessionStart", "running", false),
+        ("UserPromptSubmit", "running", false),
+        ("PreToolUse", "running", false),
+        ("PermissionRequest", "attention", true),
+        ("PostToolUse", "running", false),
+        ("PreCompact", "running", false),
+        ("PostCompact", "running", false),
+        ("Stop", "done", false),
+        ("SessionEnd", "offline", false),
+    ];
+    for (event_name, status, attention) in expected {
+        let command = hooks["hooks"][event_name][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap();
+        let mut child = Command::new("sh")
+            .args(["-c", command])
+            .env("AMUX_STATE_DIR", &state)
+            .env("AMUX_NO_DAEMON", "1")
+            .env_remove("TMUX")
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(br#"{"session_id":"rendered-codex"}"#)
+            .unwrap();
+        assert!(
+            child.wait_with_output().unwrap().status.success(),
+            "{event_name}"
+        );
+        let listed = amux(&state).args(["list", "--json"]).output().unwrap();
+        let listed: Value = serde_json::from_slice(&listed.stdout).unwrap();
+        assert_eq!(listed["records"]["codex:rendered-codex"]["status"], status);
+        assert_eq!(
+            listed["records"]["codex:rendered-codex"]["attention"],
+            attention
+        );
+    }
+    fs::remove_dir_all(state).unwrap();
+    fs::remove_dir_all(home).unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn daemon_adopts_an_orphaned_event_log_before_compacting() {
+    let _lock = real_server_test_lock();
+    let state = temp_dir("orphaned-event-log");
+    event(
+        &state,
+        "codex",
+        &["--event", "PreToolUse"],
+        br#"{"session_id":"orphaned-old"}"#.to_vec(),
+    );
+    fs::rename(
+        state.join("events.jsonl"),
+        state.join("events.jsonl.compacting"),
+    )
+    .unwrap();
+    event(
+        &state,
+        "codex",
+        &["--event", "PostToolUse"],
+        br#"{"session_id":"orphaned-live"}"#.to_vec(),
+    );
+    let mut daemon = Command::new(env!("CARGO_BIN_EXE_amux-rs"));
+    daemon
+        .arg("daemon")
+        .env("AMUX_STATE_DIR", &state)
+        .env("AMUX_EVENTS_PER_SESSION", "200")
+        .env_remove("TMUX")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut daemon = daemon.spawn().unwrap();
+    for _ in 0..40 {
+        if state.join("amux.sock").exists() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+    assert!(state.join("amux.sock").exists());
+    let log = fs::read_to_string(state.join("events.jsonl")).unwrap();
+    assert!(log.contains("orphaned-old"));
+    assert!(log.contains("orphaned-live"));
+    assert!(!state.join("events.jsonl.compacting").exists());
+    let _ = daemon_request(&state, r#"{"kind":"shutdown"}"#);
+    let _ = daemon.wait();
+    fs::remove_dir_all(state).unwrap();
+}
+
+#[test]
 fn fixture_normalization_uses_the_v1_schema() {
     let state = temp_dir("fixtures");
     event(&state, "codex", &[], fixture("codex-permission.json"));

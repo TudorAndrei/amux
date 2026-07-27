@@ -204,6 +204,12 @@ printf '%s\n' "$picker_rows" | awk -F '\t' '
   END { exit !(session && NR == 1) }
 '
 
+export TMUX="fake"
+AMUX_FAKE_AGENT_LIVE=1 "$ROOT/bin/amux" event --agent codex --event SessionEnd <"$ROOT/tests/fixtures/codex-permission.json"
+unset TMUX
+sessions="$(AMUX_FAKE_AGENT_LIVE=1 "$ROOT/bin/amux" sessions --json)"
+printf '%s\n' "$sessions" | jq -e 'length == 1 and .[0].status == "offline" and .[0].agents[0].live == true' >/dev/null
+
 unset TMUX TMUX_PANE
 RACE_STATE_DIR="$(mktemp -d "$TMPDIR/amux-race.XXXXXX")"
 for i in $(seq 1 40); do

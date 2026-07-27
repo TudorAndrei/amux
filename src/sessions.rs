@@ -125,7 +125,7 @@ fn views_from(
     panes: Vec<crate::tmux::Pane>,
 ) -> Vec<SessionView> {
     let cutoff = now() - config.stale_seconds;
-    let mut records: Vec<Record> = state
+    let records: Vec<Record> = state
         .records
         .values()
         .filter(|record| {
@@ -135,12 +135,6 @@ fn views_from(
         })
         .cloned()
         .collect();
-    for record in &mut records {
-        if record.last_event.eq_ignore_ascii_case("UserPromptSubmit") {
-            record.status = "running".to_owned();
-            record.attention = false;
-        }
-    }
     let sessions: Vec<_> = tmux_sessions
         .into_iter()
         .filter(|session| !config.hide_subagents || !uuid_like(&session.name))
@@ -270,6 +264,8 @@ mod tests {
         let config = Config {
             state_dir: PathBuf::new(),
             stale_seconds: 86_400,
+            events_per_session: 200,
+            events_compact_bytes: 8 * 1024 * 1024,
             hide_subagents: true,
             use_color: false,
         };
@@ -323,6 +319,8 @@ mod tests {
         let config = Config {
             state_dir: PathBuf::new(),
             stale_seconds: 86_400,
+            events_per_session: 200,
+            events_compact_bytes: 8 * 1024 * 1024,
             hide_subagents: true,
             use_color: false,
         };

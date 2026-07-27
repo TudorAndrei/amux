@@ -5,6 +5,101 @@ use std::env;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+const ALLOWLISTED_RAW_STRINGS: &[&str] = &[
+    "session_id",
+    "cwd",
+    "hook_event_name",
+    "source",
+    "turn_id",
+    "tool_name",
+    "permission_mode",
+    "reason",
+    "agent_id",
+    "agent_type",
+    "parent_agent_id",
+    "parent_session_id",
+    "is_subagent",
+];
+const MAX_RAW_BYTES: usize = 4 * 1024;
+const MAX_CONTAINER_ENTRIES: usize = 32;
+const MAX_RAW_DEPTH: usize = 3;
+
+fn truncate_utf8(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_owned();
+    }
+    let mut end = max_bytes;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_owned()
+}
+
+/// Preserve useful hook metadata while putting a hard, serialized-size bound on
+/// untrusted hook payloads. The value is intentionally JSON-shaped so existing
+/// integrations can continue to inspect the retained fields.
+pub fn compact_raw(raw: Value) -> Value {
+    let compacted = compact_value(raw, 0, None);
+    // `compact_value` greedily checks container candidates, but a scalar string
+    // can still be large enough to exceed the envelope by itself.
+    if serde_json::to_vec(&compacted).is_ok_and(|serialized| serialized.len() <= MAX_RAW_BYTES) {
+        compacted
+    } else {
+        Value::String(truncate_utf8(
+            compacted.as_str().unwrap_or_default(),
+            MAX_RAW_BYTES.saturating_sub(2),
+        ))
+    }
+}
+
+fn compact_value(value: Value, depth: usize, key: Option<&str>) -> Value {
+    match value {
+        Value::String(value) => Value::String(truncate_utf8(
+            &value,
+            if key.is_some_and(|key| ALLOWLISTED_RAW_STRINGS.contains(&key)) {
+                1024
+            } else {
+                256
+            },
+        )),
+        Value::Array(_) if depth >= MAX_RAW_DEPTH => Value::Null,
+        Value::Array(values) => {
+            let mut output = Vec::new();
+            for value in values.into_iter().take(MAX_CONTAINER_ENTRIES) {
+                let candidate = compact_value(value, depth + 1, None);
+                let mut proposed = output.clone();
+                proposed.push(candidate);
+                if serde_json::to_vec(&Value::Array(proposed.clone()))
+                    .is_ok_and(|serialized| serialized.len() <= MAX_RAW_BYTES)
+                {
+                    output = proposed;
+                } else {
+                    break;
+                }
+            }
+            Value::Array(output)
+        }
+        Value::Object(_) if depth >= MAX_RAW_DEPTH => Value::Null,
+        Value::Object(values) => {
+            let mut output = serde_json::Map::new();
+            for (key, value) in values.into_iter().take(MAX_CONTAINER_ENTRIES) {
+                let candidate = compact_value(value, depth + 1, Some(&key));
+                let mut proposed = output.clone();
+                proposed.insert(key.clone(), candidate);
+                if serde_json::to_vec(&Value::Object(proposed.clone()))
+                    .is_ok_and(|serialized| serialized.len() <= MAX_RAW_BYTES)
+                {
+                    output = proposed;
+                } else {
+                    break;
+                }
+            }
+            Value::Object(output)
+        }
+        value => value,
+    }
+}
+
 fn raw_string(raw: &Value, paths: &[&[&str]]) -> String {
     for path in paths {
         let mut item = raw;
@@ -177,6 +272,8 @@ pub fn normalize_at(input: NormalizeInput<'_>) -> (String, Record) {
         status_override.to_owned()
     } else if attention {
         "attention".to_owned()
+    } else if lower.contains("sessionend") || lower.contains("session_end") {
+        "offline".to_owned()
     } else if ["stop", "end", "idle", "done", "complete"]
         .iter()
         .any(|word| lower.contains(word))
@@ -186,11 +283,15 @@ pub fn normalize_at(input: NormalizeInput<'_>) -> (String, Record) {
         "running".to_owned()
     };
     let reason = if !reason_override.is_empty() {
-        reason_override.to_owned()
+        truncate_utf8(reason_override, 256)
     } else {
-        raw_string(&raw, &[&["reason"], &["message"], &["notificationType"]])
-            .if_empty(event.clone())
+        truncate_utf8(
+            &raw_string(&raw, &[&["reason"], &["message"], &["notificationType"]])
+                .if_empty(event.clone()),
+            256,
+        )
     };
+    let cwd = truncate_utf8(&cwd, 1024);
     let timestamp = now();
     let key = if !tmux_session.is_empty() && !tmux_pane.is_empty() {
         format!("{agent}:{tmux_session}:{tmux_pane}")
@@ -214,7 +315,7 @@ pub fn normalize_at(input: NormalizeInput<'_>) -> (String, Record) {
             last_event: event,
             updated_at: timestamp,
             updated_at_iso: iso_now(timestamp),
-            raw,
+            raw: compact_raw(raw),
         },
     )
 }
@@ -225,5 +326,52 @@ trait IfEmpty {
 impl IfEmpty for String {
     fn if_empty(self, fallback: String) -> String {
         if self.is_empty() { fallback } else { self }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compact_raw_enforces_all_payload_budgets_without_losing_subagent_metadata() {
+        let mut wide = serde_json::Map::new();
+        for index in 0..100 {
+            wide.insert(format!("field-{index:03}"), Value::String("x".repeat(20)));
+        }
+        let raw = serde_json::json!({
+            "session_id": "session-1",
+            "agent_id": "child-1",
+            "agent_type": "worker",
+            "cwd": "/workspace",
+            "last_assistant_message": "x".repeat(10_000),
+            "wide": wide,
+            "nested": {"one": {"two": {"three": {"four": "discard"}}}}
+        });
+        let compacted = compact_raw(raw);
+        assert_eq!(compacted["session_id"], "session-1");
+        assert_eq!(compacted["agent_id"], "child-1");
+        assert_eq!(compacted["agent_type"], "worker");
+        assert_eq!(
+            compacted["last_assistant_message"].as_str().unwrap().len(),
+            256
+        );
+        assert!(compacted["wide"].as_object().unwrap().len() <= MAX_CONTAINER_ENTRIES);
+        assert!(serde_json::to_vec(&compacted).unwrap().len() <= MAX_RAW_BYTES);
+    }
+
+    #[test]
+    fn session_end_normalizes_to_offline_before_generic_end_matching() {
+        let (_, record) = normalize_at(NormalizeInput {
+            agent: "codex",
+            event_override: "SessionEnd",
+            status_override: "",
+            attention_override: "",
+            reason_override: "",
+            raw: serde_json::json!({"session_id": "ended"}),
+            fallback_cwd: String::new(),
+            tmux: TmuxContext::default(),
+        });
+        assert_eq!(record.status, "offline");
     }
 }

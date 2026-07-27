@@ -6,7 +6,9 @@ All integrations call:
 bin/amux event --agent <agent> --event <event>
 ```
 
-The raw hook payload is passed on stdin and stored in `events.jsonl`.
+The raw hook payload is passed on stdin. amux retains a compact, bounded copy
+in `events.jsonl`; it is a transition log, so repeated events with unchanged
+status, attention, and reason are not appended.
 
 The Rust `install-hooks` command renders these templates with the absolute
 `bin/amux` path and merges duplicate-safe JSON entries. Use
@@ -16,14 +18,27 @@ changed.
 
 ## Codex
 
-- `SessionStart` -> `running`
+- `SessionStart` (`startup|resume|clear`) -> `running`
 - `UserPromptSubmit` -> `running`
+- `PreToolUse` -> `running`
+- `PostToolUse` -> `running`
 - `PermissionRequest` -> `attention`
+- `PreCompact` -> `running`
+- `PostCompact` -> `running`
 - `Stop` -> `done`
+- `SessionEnd` -> `offline`
 
-Codex global hooks are installed into `~/.codex/hooks.json`.
-`UserPromptSubmit` is explicitly treated as running and never inferred as an
-attention event merely because its name contains "prompt".
+Codex global hooks are installed into `~/.codex/hooks.json`; every shipped
+command carries an explicit status or attention value, so the mapping does not
+depend on event-name inference. Codex has no `Notification` hook, so
+`PermissionRequest` is its attention signal.
+
+`Stop` marks the end of the last observed turn, not the end of the Codex
+session. `PreToolUse` holds the row at `running` while tools execute and
+`PostToolUse` clears an earlier permission attention after approval. Codex has
+no hook that announces a model-only turn start, so a tool-less turn after
+`Stop` remains visibly `done` until its next hook; that limitation is
+intentional and documented rather than masked with a timer.
 
 ## Claude
 

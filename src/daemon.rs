@@ -3,6 +3,7 @@ use crate::event;
 use crate::ipc::{HookRequest, Request, Response};
 use crate::model::{SessionView, State};
 use crate::state;
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
@@ -45,10 +46,16 @@ struct Shared {
     shutdown: bool,
     monitor_server: Option<PathBuf>,
     monitor_stop: Option<Arc<AtomicBool>>,
+    maintenance_active: Arc<AtomicBool>,
+    refresh_pending: Arc<AtomicBool>,
 }
 
 pub fn run(config: Config) -> Result<(), String> {
     state::ensure_private_dir(&config)?;
+    state::adopt_orphaned_log(&config)?;
+    let mut state = state::load(&config)?;
+    state::compact_events(&config, &state.records.keys().cloned().collect())?;
+    state = state::load(&config)?;
     let path = socket_path(&config);
     if path.exists() {
         match UnixStream::connect(&path) {
@@ -68,7 +75,6 @@ pub fn run(config: Config) -> Result<(), String> {
     let listener = UnixListener::bind(&path).map_err(|error| error.to_string())?;
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
         .map_err(|error| error.to_string())?;
-    let state = state::load(&config)?;
     let topology = crate::tmux::Topology::default();
     let views = crate::sessions::views_with_topology(&config, &state, &topology);
     let status = crate::render::status(&config, &views);
@@ -81,6 +87,8 @@ pub fn run(config: Config) -> Result<(), String> {
         shutdown: false,
         monitor_server: None,
         monitor_stop: None,
+        maintenance_active: Arc::new(AtomicBool::new(false)),
+        refresh_pending: Arc::new(AtomicBool::new(false)),
     }));
     attach_monitor(&config, &shared, crate::tmux::server_from_env());
     listener
@@ -185,12 +193,7 @@ fn handle(
         Request::Event { request } => {
             let request = *request;
             attach_monitor(config, &shared, request.tmux_server.clone());
-            let topology = shared
-                .lock()
-                .map_err(|_| "daemon state lock poisoned".to_owned())?
-                .topology
-                .clone();
-            let tmux = context_for_pane(&topology, &request.tmux_pane)
+            let tmux = context_for_known_pane(&shared, &request.tmux_pane)
                 .or_else(|| context_from_request(&request))
                 .unwrap_or_default();
             let (key, record) = event::normalize_at(event::NormalizeInput {
@@ -209,7 +212,7 @@ fn handle(
                 .cloned()
                 .unwrap_or_default();
             fields.insert("key".to_owned(), serde_json::Value::String(key.clone()));
-            state::write_event(
+            let write = state::write_event(
                 config,
                 key,
                 record,
@@ -224,7 +227,15 @@ fn handle(
                 crate::sessions::views_with_topology(config, &guard.state, &guard.topology);
             guard.status = crate::render::status(config, &guard.views);
             guard.revision += 1;
-            reply(&mut stream, &Response::ok(guard.revision))
+            let revision = guard.revision;
+            let retain_keys = guard.state.records.keys().cloned().collect::<BTreeSet<_>>();
+            let server = guard.monitor_server.clone();
+            drop(guard);
+            if write.over_compact_threshold {
+                schedule_compaction(config.clone(), Arc::clone(&shared), retain_keys);
+            }
+            schedule_refresh(Arc::clone(&shared), server);
+            reply(&mut stream, &Response::ok(revision))
         }
         Request::Clear => {
             state::clear(config)?;
@@ -312,6 +323,61 @@ fn handle(
             }
         }
     }
+}
+
+/// A just-started monitor may not have published its initial snapshot when the
+/// hook that attached it arrives. Wait briefly for that in-memory snapshot; this
+/// is still daemon-local and never reintroduces per-hook tmux subprocesses.
+fn context_for_known_pane(
+    shared: &Arc<Mutex<Shared>>,
+    pane_id: &str,
+) -> Option<crate::event::TmuxContext> {
+    if pane_id.is_empty() {
+        return None;
+    }
+    for attempt in 0..10 {
+        let topology = shared.lock().ok()?.topology.clone();
+        if let Some(context) = context_for_pane(&topology, pane_id) {
+            return Some(context);
+        }
+        if attempt != 9 {
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+    None
+}
+
+fn schedule_compaction(config: Config, shared: Arc<Mutex<Shared>>, retain_keys: BTreeSet<String>) {
+    let active = match shared.lock() {
+        Ok(guard) => Arc::clone(&guard.maintenance_active),
+        Err(_) => return,
+    };
+    if active.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    thread::spawn(move || {
+        let _ = state::compact_events(&config, &retain_keys);
+        active.store(false, Ordering::Release);
+    });
+}
+
+fn schedule_refresh(shared: Arc<Mutex<Shared>>, server: Option<PathBuf>) {
+    let pending = match shared.lock() {
+        Ok(guard) => Arc::clone(&guard.refresh_pending),
+        Err(_) => return,
+    };
+    if pending.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(20));
+        let mut command = std::process::Command::new("tmux");
+        if let Some(server) = server {
+            command.arg("-S").arg(server);
+        }
+        let _ = command.args(["refresh-client", "-S"]).output();
+        pending.store(false, Ordering::Release);
+    });
 }
 
 fn attach_monitor(config: &Config, shared: &Arc<Mutex<Shared>>, server: Option<PathBuf>) {
@@ -501,6 +567,8 @@ mod tests {
             shutdown: false,
             monitor_server: None,
             monitor_stop: None,
+            maintenance_active: Arc::new(AtomicBool::new(false)),
+            refresh_pending: Arc::new(AtomicBool::new(false)),
         }))
     }
 
@@ -508,6 +576,8 @@ mod tests {
         Config {
             state_dir: PathBuf::new(),
             stale_seconds: 86_400,
+            events_per_session: 200,
+            events_compact_bytes: 8 * 1024 * 1024,
             hide_subagents: true,
             use_color: false,
         }
@@ -566,6 +636,8 @@ mod tests {
         let config = Config {
             state_dir: PathBuf::new(),
             stale_seconds: 86_400,
+            events_per_session: 200,
+            events_compact_bytes: 8 * 1024 * 1024,
             hide_subagents: true,
             use_color: false,
         };

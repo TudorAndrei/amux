@@ -40,6 +40,119 @@ pub fn uninstall(mode: Mode) -> Result<(), String> {
     uninstall_at(&Paths::from_env()?, mode)
 }
 
+/// Describe differences between the installed JSON-merged hooks and the
+/// templates shipped by this checkout. Text-template integrations deliberately
+/// are not included: they have no safe merge boundary to inspect.
+pub fn drift() -> Result<Vec<String>, String> {
+    drift_at(&Paths::from_env()?)
+}
+
+fn drift_at(paths: &Paths) -> Result<Vec<String>, String> {
+    let launcher = paths.launcher();
+    let integrations = [
+        (
+            "Codex",
+            paths.home.join(".codex/hooks.json"),
+            paths.root.join("hooks/codex/hooks.json"),
+        ),
+        (
+            "Claude",
+            paths.home.join(".claude/settings.json"),
+            paths.root.join("hooks/claude/settings.fragment.json"),
+        ),
+    ];
+    let mut output = Vec::new();
+    for (name, installed_path, template_path) in integrations {
+        let template = template_json(&template_path, &launcher)?;
+        let installed = read_json(&installed_path)?;
+        output.extend(drift_document(name, &template, &installed));
+    }
+    Ok(output)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct OwnedHook {
+    event: String,
+    matcher: Option<Value>,
+    arguments: Vec<String>,
+}
+
+fn drift_document(name: &str, template: &Value, installed: &Value) -> Vec<String> {
+    let expected = owned_hooks(template);
+    let actual = owned_hooks(installed);
+    let mut messages = Vec::new();
+    for hook in &expected {
+        let matches: Vec<_> = actual
+            .iter()
+            .filter(|item| item.event == hook.event)
+            .collect();
+        if matches.is_empty() {
+            messages.push(format!("{name}: missing amux hook for {}", hook.event));
+            continue;
+        }
+        if !matches.iter().any(|item| item.matcher == hook.matcher) {
+            messages.push(format!("{name}: matcher drift for {}", hook.event));
+        }
+        if !matches.iter().any(|item| item.arguments == hook.arguments) {
+            messages.push(format!("{name}: argument drift for {}", hook.event));
+        }
+    }
+    for hook in &actual {
+        if !expected.iter().any(|item| item.event == hook.event) {
+            messages.push(format!("{name}: stale amux hook for {}", hook.event));
+        }
+    }
+    messages
+}
+
+fn owned_hooks(document: &Value) -> Vec<OwnedHook> {
+    let Some(events) = document.get("hooks").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    let mut output = Vec::new();
+    for (event, groups) in events {
+        let Some(groups) = groups.as_array() else {
+            continue;
+        };
+        for group in groups {
+            let Some(object) = group.as_object() else {
+                continue;
+            };
+            let Some(hooks) = object.get("hooks").and_then(Value::as_array) else {
+                continue;
+            };
+            let mut arguments: Vec<_> = hooks
+                .iter()
+                .filter_map(|hook| hook.get("command").and_then(Value::as_str))
+                .filter(|command| is_amux_command(command))
+                .filter_map(command_arguments)
+                .collect();
+            if arguments.is_empty() {
+                continue;
+            }
+            arguments.sort();
+            output.push(OwnedHook {
+                event: event.clone(),
+                matcher: object.get("matcher").cloned(),
+                arguments,
+            });
+        }
+    }
+    output
+}
+
+fn is_amux_command(command: &str) -> bool {
+    command.contains("bin/amux event --agent ")
+}
+
+/// The launcher location is intentionally ignored: source, TPM, and release
+/// installs put the same command at different absolute paths.
+fn command_arguments(command: &str) -> Option<String> {
+    command
+        .find(" event ")
+        .map(|index| command[index + " event".len()..].trim().to_owned())
+}
+
 fn install_at(paths: &Paths, mode: Mode) -> Result<(), String> {
     let launcher = paths.launcher();
     if !launcher.is_file() {
@@ -233,7 +346,7 @@ fn remove_matching(value: &mut Value) -> bool {
             let is_amux_command = object
                 .get("command")
                 .and_then(Value::as_str)
-                .is_some_and(|command| command.contains("bin/amux event --agent "));
+                .is_some_and(is_amux_command);
             if is_amux_command {
                 return true;
             }
@@ -375,6 +488,113 @@ mod tests {
         let paths = paths();
         install_at(&paths, Mode::DryRun).unwrap();
         assert!(!paths.home.join(".codex/hooks.json").exists());
+        fs::remove_dir_all(paths.home).unwrap();
+    }
+
+    #[test]
+    fn codex_template_has_the_complete_explicit_nine_event_contract() {
+        let template: Value = serde_json::from_str(
+            &fs::read_to_string(
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("hooks/codex/hooks.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let hooks = template["hooks"].as_object().unwrap();
+        let expected = [
+            ("SessionStart", Some("startup|resume|clear"), "running", "0"),
+            ("UserPromptSubmit", None, "running", "0"),
+            ("PreToolUse", None, "running", "0"),
+            ("PostToolUse", None, "running", "0"),
+            ("PermissionRequest", Some("*"), "attention", "1"),
+            ("PreCompact", None, "running", "0"),
+            ("PostCompact", None, "running", "0"),
+            ("Stop", None, "done", "0"),
+            ("SessionEnd", None, "offline", "0"),
+        ];
+        assert_eq!(hooks.len(), expected.len());
+        for (event, matcher, status, attention) in expected {
+            let group = &hooks[event][0];
+            assert_eq!(group.get("matcher").and_then(Value::as_str), matcher);
+            let command = group["hooks"][0]["command"].as_str().unwrap();
+            assert!(command.contains(&format!("--event {event}")));
+            assert!(command.contains(&format!("--status {status}")));
+            assert!(command.contains(&format!("--attention {attention}")));
+        }
+    }
+
+    #[test]
+    fn drift_ignores_launcher_paths_and_foreign_hooks_but_reports_real_changes() {
+        let paths = paths();
+        install_at(&paths, Mode::Write).unwrap();
+        assert!(drift_at(&paths).unwrap().is_empty());
+        let codex = paths.home.join(".codex/hooks.json");
+        let mut installed = read_json(&codex).unwrap();
+        let hooks = installed["hooks"].as_object_mut().unwrap();
+        hooks.remove("PreToolUse");
+        hooks["Stop"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "hooks": [{"type": "command", "command": "other command"}]
+            }));
+        write_json(&codex, &installed, "test", Mode::Write).unwrap();
+        let drift = drift_at(&paths).unwrap();
+        assert_eq!(
+            drift
+                .iter()
+                .filter(|line| line.contains("PreToolUse"))
+                .count(),
+            1
+        );
+        assert!(!drift.iter().any(|line| line.contains("Stop")));
+
+        install_at(&paths, Mode::Write).unwrap();
+        let mut installed = read_json(&codex).unwrap();
+        let stop_group = installed["hooks"]["Stop"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|group| {
+                group["hooks"][0]["command"]
+                    .as_str()
+                    .is_some_and(is_amux_command)
+            })
+            .unwrap();
+        let command = installed["hooks"]["Stop"][stop_group]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .replace("/bin/amux event", "/another/bin/amux event");
+        installed["hooks"]["Stop"][stop_group]["hooks"][0]["command"] = Value::String(command);
+        write_json(&codex, &installed, "test", Mode::Write).unwrap();
+        assert!(drift_at(&paths).unwrap().is_empty());
+
+        let mut installed = read_json(&codex).unwrap();
+        let stop_group = installed["hooks"]["Stop"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|group| {
+                group["hooks"][0]["command"]
+                    .as_str()
+                    .is_some_and(is_amux_command)
+            })
+            .unwrap();
+        installed["hooks"]["Stop"][stop_group]["hooks"][0]["command"] =
+            Value::String("/old/bin/amux event --agent codex --event Stop".to_owned());
+        installed["hooks"]["SessionStart"][0]["matcher"] = Value::String("startup".to_owned());
+        write_json(&codex, &installed, "test", Mode::Write).unwrap();
+        let drift = drift_at(&paths).unwrap();
+        assert!(
+            drift
+                .iter()
+                .any(|line| line.contains("argument drift for Stop"))
+        );
+        assert!(
+            drift
+                .iter()
+                .any(|line| line.contains("matcher drift for SessionStart"))
+        );
         fs::remove_dir_all(paths.home).unwrap();
     }
 }
