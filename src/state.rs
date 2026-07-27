@@ -382,8 +382,28 @@ mod tests {
         ensure_private_dir(&config).unwrap();
         let contents = format!("{}\n{}\n", line("a", 1), line("a", 2));
         fs::write(config.events_file(), &contents).unwrap();
+        let written = write_event(
+            &config,
+            "a".to_owned(),
+            Record {
+                status: "running".to_owned(),
+                reason: "working".to_owned(),
+                ..Record::default()
+            },
+            &serde_json::json!({"key": "a", "ordinal": 3}),
+            10,
+        )
+        .unwrap();
+        assert!(written.logged);
+        assert!(!written.over_compact_threshold);
         compact_events(&config, &BTreeSet::from(["a".to_owned()])).unwrap();
-        assert_eq!(fs::read_to_string(config.events_file()).unwrap(), contents);
+        assert_eq!(
+            fs::read_to_string(config.events_file())
+                .unwrap()
+                .lines()
+                .count(),
+            3
+        );
         fs::remove_dir_all(config.state_dir).unwrap();
     }
 
