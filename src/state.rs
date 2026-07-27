@@ -316,18 +316,20 @@ mod tests {
         let a = "codex:one:%1";
         let b = "codex:one:%2";
         let dead = "codex:old:%9";
-        let contents = [
+        let mut lines = vec![
             line(a, 0),
             line(b, 1),
-            line(a, 2),
             "not json".to_owned(),
-            serde_json::json!({"ordinal": 4}).to_string(),
-            line(dead, 5),
-            line(b, 6),
-            line(a, 7),
-            line(b, 8),
-        ]
-        .join("\n");
+            serde_json::json!({"ordinal": 3}).to_string(),
+            line(dead, 4),
+        ];
+        for ordinal in 5..505 {
+            lines.push(line(a, ordinal));
+            if ordinal == 250 {
+                lines.push(line(b, ordinal));
+            }
+        }
+        let contents = lines.join("\n");
         fs::write(config.events_file(), format!("{contents}\n")).unwrap();
         let keys = BTreeSet::from([a.to_owned(), b.to_owned()]);
         compact_events(&config, &keys).unwrap();
@@ -341,7 +343,7 @@ mod tests {
                 .iter()
                 .map(|event| event["ordinal"].as_u64())
                 .collect::<Vec<_>>(),
-            vec![Some(2), Some(6), Some(7), Some(8)]
+            vec![Some(1), Some(250), Some(503), Some(504)]
         );
         assert_eq!(events.iter().filter(|event| event["key"] == a).count(), 2);
         assert_eq!(
