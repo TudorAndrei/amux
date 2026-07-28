@@ -448,6 +448,28 @@ mod tests {
     }
 
     #[test]
+    fn stale_lock_is_taken_over_before_writing() {
+        let mut config = config(200);
+        config.lock_timeout_seconds = 0;
+        ensure_private_dir(&config).unwrap();
+        fs::create_dir(config.lock_dir()).unwrap();
+        thread::sleep(Duration::from_millis(2));
+        write_event(
+            &config,
+            "codex:one".to_owned(),
+            Record {
+                status: "running".to_owned(),
+                ..Record::default()
+            },
+            &serde_json::json!({"key":"codex:one"}),
+            10,
+        )
+        .unwrap();
+        assert!(load(&config).unwrap().records.contains_key("codex:one"));
+        fs::remove_dir_all(config.state_dir).unwrap();
+    }
+
+    #[test]
     fn repeated_state_does_not_append_another_event() {
         let config = config(200);
         let record = Record {

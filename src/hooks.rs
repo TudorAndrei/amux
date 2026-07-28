@@ -524,6 +524,22 @@ mod tests {
     }
 
     #[test]
+    fn templates_quote_paths_with_spaces_quotes_and_backslashes() {
+        let launcher = PathBuf::from("/tmp/amux path/\\\"quoted\\\\bin/amux");
+        let rendered = template_json(
+            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("hooks/codex/hooks.json"),
+            &launcher,
+        )
+        .unwrap();
+        let command = rendered["hooks"]["Stop"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap();
+        assert!(command.starts_with("'/tmp/amux path/"));
+        assert!(is_amux_command(command));
+        assert!(serde_json::to_string(&rendered).is_ok());
+    }
+
+    #[test]
     fn codex_template_has_the_complete_explicit_nine_event_contract() {
         let template: Value = serde_json::from_str(
             &fs::read_to_string(

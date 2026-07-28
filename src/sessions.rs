@@ -317,6 +317,64 @@ mod tests {
     }
 
     #[test]
+    fn projection_at_100_sessions_200_panes_200_records_is_measured() {
+        use std::time::Instant;
+        let config = Config {
+            state_dir: PathBuf::new(),
+            stale_seconds: 86_400,
+            events_per_session: 200,
+            events_compact_bytes: 8 * 1024 * 1024,
+            lock_timeout_seconds: 30,
+            rejected_overrides: Vec::new(),
+            hide_subagents: true,
+            use_color: false,
+        };
+        let sessions = (0..100)
+            .map(|index| crate::tmux::TmuxSession {
+                id: format!("${index}"),
+                name: format!("session-{index}"),
+                last_attached: index,
+                attached: false,
+            })
+            .collect::<Vec<_>>();
+        let panes = (0..200)
+            .map(|index| crate::tmux::Pane {
+                session: format!("session-{}", index % 100),
+                pane: format!("%{index}"),
+                command: "codex".to_owned(),
+                ..crate::tmux::Pane::default()
+            })
+            .collect::<Vec<_>>();
+        let records = (0..200)
+            .map(|index| {
+                (
+                    format!("codex:{index}"),
+                    Record {
+                        agent: "codex".to_owned(),
+                        tmux_session: format!("session-{}", index % 100),
+                        tmux_pane: format!("%{index}"),
+                        updated_at: now(),
+                        ..Record::default()
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let started = Instant::now();
+        let views = views_from(
+            &config,
+            &State {
+                version: 1,
+                records,
+            },
+            sessions,
+            panes,
+        );
+        let elapsed = started.elapsed();
+        eprintln!("projection 100 sessions / 200 panes / 200 records: {elapsed:?}");
+        assert_eq!(views.len(), 100);
+    }
+
+    #[test]
     fn offline_session_does_not_target_a_stale_agent_pane() {
         let config = Config {
             state_dir: PathBuf::new(),

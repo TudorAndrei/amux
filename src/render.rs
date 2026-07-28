@@ -51,3 +51,14 @@ pub fn sanitize(value: &str) -> String {
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize;
+
+    #[test]
+    fn sanitize_makes_controls_visible_and_preserves_unicode() {
+        assert_eq!(sanitize("wait\x1b[2J\n"), "wait^[[2J^J");
+        assert_eq!(sanitize("東京 e\u{301} 🦀"), "東京 e\u{301} 🦀");
+    }
+}

@@ -15,5 +15,6 @@ All findings from the `improve` audit at `8cf1622` are resolved.
   defaults and are reported by `amux doctor`.
 - Conventional-commit verification runs in the local check task and release
   preparation path.
-- Projection measurement at 100 sessions / 200 panes / 200 records is below
-  the 5 ms indexing threshold; indexing is rejected as premature.
+- Projection measurement at 100 sessions / 200 panes / 200 records took
+  1.47 ms in the Rust unit-test build on Darwin arm64 (2026-07-28), below the
+  5 ms indexing threshold. Indexing is REJECTED as premature.

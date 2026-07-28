@@ -38,6 +38,19 @@ The figures above compare the former shell path with equivalent native work.
 They intentionally do not treat tmux's own status redraw interval or terminal
 paint timing as an amux latency measurement.
 
+## Session projection cost
+
+The `sessions::views_from` measurement test builds 100 sessions, 200 panes, and
+200 records — about three times the observed deployment topology — then projects
+all session views in **1.47 ms** in the Rust unit-test build on Darwin arm64
+(2026-07-28). This is below the 5 ms threshold, so a session index is rejected
+as premature. Run it with:
+
+```bash
+cargo test --lib \
+  projection_at_100_sessions_200_panes_200_records_is_measured -- --nocapture
+```
+
 ## Codex activity-hook cost
 
 This measured the pre-change native commit `81ad313` against the current
