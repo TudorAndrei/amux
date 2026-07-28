@@ -2,6 +2,21 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.2.5](https://github.com/TudorAndrei/amux/compare/f6ea6ed88e4465989a9cd97d229b5c5f0163e032..v0.2.5) - 2026-07-28
+#### Bug Fixes
+- (**codex**) bound hook events and restore liveness - ([f6ea6ed](https://github.com/TudorAndrei/amux/commit/f6ea6ed88e4465989a9cd97d229b5c5f0163e032)) - TudorAndrei
+- (**state**) drop malformed byte lines during compaction - ([d256a1b](https://github.com/TudorAndrei/amux/commit/d256a1bf18ae2d0ad7b750e669925b6c3e862be4)) - TudorAndrei
+#### Performance Improvements
+- (**event**) avoid refreshes outside tmux - ([708946a](https://github.com/TudorAndrei/amux/commit/708946a66855f8210e4b7a91125a011642bbac08)) - TudorAndrei
+#### Documentation
+- (**perf**) record Codex hook cost benchmark - ([eff9f9b](https://github.com/TudorAndrei/amux/commit/eff9f9b859a5a45a52ee906ddc85546657c2b630)) - TudorAndrei
+- (**plan**) record Codex event retention rollout - ([ffc6e63](https://github.com/TudorAndrei/amux/commit/ffc6e63e5126eecd657cc437f6bf275e419f50fd)) - TudorAndrei
+#### Tests
+- (**state**) prove disabled retention keeps appending - ([9db7518](https://github.com/TudorAndrei/amux/commit/9db75181904c17e7a5638db9384de647a4f19c7d)) - TudorAndrei
+- (**state**) cover high-volume per-key retention - ([cc44256](https://github.com/TudorAndrei/amux/commit/cc4425696fdeefdb868026c42917cbaefa9cfcb3)) - TudorAndrei
+
+- - -
+
 ## [v0.2.4](https://github.com/TudorAndrei/amux/compare/81ad313dede469eb10f407110ac246fb3266d269..v0.2.4) - 2026-07-27
 #### Bug Fixes
 - (**picker**) render sessions on startup - ([81ad313](https://github.com/TudorAndrei/amux/commit/81ad313dede469eb10f407110ac246fb3266d269)) - TudorAndrei
