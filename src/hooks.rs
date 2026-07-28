@@ -1,8 +1,9 @@
+use crate::fsutil::sync_dir;
 use serde_json::{Map, Value};
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -76,7 +77,13 @@ fn drift_at(paths: &Paths) -> Result<Vec<String>, String> {
 struct OwnedHook {
     event: String,
     matcher: Option<Value>,
-    arguments: Vec<String>,
+    commands: Vec<OwnedCommand>,
+}
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct OwnedCommand {
+    arguments: String,
+    quoted: bool,
 }
 
 fn drift_document(name: &str, template: &Value, installed: &Value) -> Vec<String> {
@@ -92,10 +99,29 @@ fn drift_document(name: &str, template: &Value, installed: &Value) -> Vec<String
             messages.push(format!("{name}: missing amux hook for {}", hook.event));
             continue;
         }
-        if !matches.iter().any(|item| item.matcher == hook.matcher) {
-            messages.push(format!("{name}: matcher drift for {}", hook.event));
+        if matches
+            .iter()
+            .any(|item| item.matcher == hook.matcher && item.commands == hook.commands)
+        {
+            continue;
         }
-        if !matches.iter().any(|item| item.arguments == hook.arguments) {
+        if matches.iter().any(|item| {
+            item.matcher == hook.matcher
+                && item
+                    .commands
+                    .iter()
+                    .map(|command| &command.arguments)
+                    .collect::<Vec<_>>()
+                    == hook
+                        .commands
+                        .iter()
+                        .map(|command| &command.arguments)
+                        .collect::<Vec<_>>()
+        }) {
+            messages.push(format!("{name}: launcher quoting drift for {}", hook.event));
+        } else if !matches.iter().any(|item| item.matcher == hook.matcher) {
+            messages.push(format!("{name}: matcher drift for {}", hook.event));
+        } else {
             messages.push(format!("{name}: argument drift for {}", hook.event));
         }
     }
@@ -123,20 +149,27 @@ fn owned_hooks(document: &Value) -> Vec<OwnedHook> {
             let Some(hooks) = object.get("hooks").and_then(Value::as_array) else {
                 continue;
             };
-            let mut arguments: Vec<_> = hooks
+            let mut commands: Vec<_> = hooks
                 .iter()
                 .filter_map(|hook| hook.get("command").and_then(Value::as_str))
                 .filter(|command| is_amux_command(command))
-                .filter_map(command_arguments)
+                .filter_map(|command| {
+                    command_arguments(command).map(|arguments| OwnedCommand {
+                        quoted: command
+                            .find(" event ")
+                            .is_some_and(|index| command[..index].ends_with('\'')),
+                        arguments,
+                    })
+                })
                 .collect();
-            if arguments.is_empty() {
+            if commands.is_empty() {
                 continue;
             }
-            arguments.sort();
+            commands.sort();
             output.push(OwnedHook {
                 event: event.clone(),
                 matcher: object.get("matcher").cloned(),
-                arguments,
+                commands,
             });
         }
     }
@@ -151,16 +184,9 @@ fn is_amux_command(command: &str) -> bool {
 /// The launcher location is intentionally ignored: source, TPM, and release
 /// installs put the same command at different absolute paths.
 fn command_arguments(command: &str) -> Option<String> {
-    command.find(" event ").map(|index| {
-        // Preserve the launcher quoting style while deliberately ignoring its
-        // location: an old unquoted install must show as drift.
-        let style = if command[..index].ends_with('\'') {
-            "quoted"
-        } else {
-            "unquoted"
-        };
-        format!("{style}:{}", command[index + " event".len()..].trim())
-    })
+    command
+        .find(" event ")
+        .map(|index| command[index + " event".len()..].trim().to_owned())
 }
 
 fn install_at(paths: &Paths, mode: Mode) -> Result<(), String> {
@@ -418,11 +444,22 @@ fn write_text(path: &Path, text: &str, name: &str, mode: Mode) -> Result<(), Str
         print!("{text}");
         return Ok(());
     }
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-    backup(path)?;
-    let temporary = path.with_extension(format!("amux.tmp.{}", std::process::id()));
+    // Rename replaces a symlink itself, so resolve it first and atomically
+    // replace its target instead. This keeps dotfiles-managed links intact.
+    let destination = if path.is_symlink() {
+        path.canonicalize().map_err(|error| error.to_string())?
+    } else {
+        path.to_path_buf()
+    };
+    let parent = destination
+        .parent()
+        .ok_or_else(|| "configuration path has no parent".to_owned())?;
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    let final_mode = fs::metadata(&destination)
+        .map(|metadata| metadata.permissions().mode() & 0o777)
+        .unwrap_or(0o600);
+    backup(&destination)?;
+    let temporary = destination.with_extension(format!("amux.tmp.{}", std::process::id()));
     let mut file = OpenOptions::new()
         .create_new(true)
         .write(true)
@@ -431,8 +468,12 @@ fn write_text(path: &Path, text: &str, name: &str, mode: Mode) -> Result<(), Str
         .map_err(|error| error.to_string())?;
     file.write_all(text.as_bytes())
         .map_err(|error| error.to_string())?;
+    // set_permissions is intentional: OpenOptions::mode is subject to umask.
+    file.set_permissions(fs::Permissions::from_mode(final_mode))
+        .map_err(|error| error.to_string())?;
     file.sync_all().map_err(|error| error.to_string())?;
-    fs::rename(&temporary, path).map_err(|error| error.to_string())?;
+    fs::rename(&temporary, &destination).map_err(|error| error.to_string())?;
+    sync_dir(parent)?;
     println!("updated {name}: {}", path.display());
     Ok(())
 }
@@ -587,6 +628,50 @@ mod tests {
     }
 
     #[test]
+    fn atomic_write_preserves_mode_and_symlink() {
+        let paths = paths();
+        let target = paths.home.join("target.json");
+        fs::write(&target, "old").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o664)).unwrap();
+        let link = paths.home.join("settings.json");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        write_text(&link, "new", "test", Mode::Write).unwrap();
+        assert!(link.is_symlink());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "new");
+        assert_eq!(
+            fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o664
+        );
+        fs::remove_dir_all(paths.home).unwrap();
+    }
+
+    #[test]
+    fn atomic_write_drops_special_permission_bits() {
+        let paths = paths();
+        let destination = paths.home.join("special.json");
+        fs::write(&destination, "old").unwrap();
+        fs::set_permissions(&destination, fs::Permissions::from_mode(0o7664)).unwrap();
+        write_text(&destination, "new", "test", Mode::Write).unwrap();
+        assert_eq!(
+            fs::metadata(destination).unwrap().permissions().mode() & 0o7777,
+            0o664
+        );
+        fs::remove_dir_all(paths.home).unwrap();
+    }
+
+    #[test]
+    fn atomic_write_creates_private_file() {
+        let paths = paths();
+        let destination = paths.home.join("new.json");
+        write_text(&destination, "new", "test", Mode::Write).unwrap();
+        assert_eq!(
+            fs::metadata(destination).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        fs::remove_dir_all(paths.home).unwrap();
+    }
+
+    #[test]
     fn codex_template_has_the_complete_explicit_nine_event_contract() {
         let template: Value = serde_json::from_str(
             &fs::read_to_string(
@@ -619,7 +704,41 @@ mod tests {
     }
 
     #[test]
-    fn drift_reports_the_pre_quoting_command_as_an_argument_change() {
+    fn drift_keeps_quoted_commands_per_group_and_preserves_duplicates() {
+        let document = serde_json::json!({"hooks":{"Stop":[{"hooks":[
+            {"command":"'/x/bin/amux' event --agent codex --event Stop"},
+            {"command":"/x/bin/amux event --agent codex --event Stop"},
+            {"command":"/x/bin/amux event --agent codex --event Stop"}
+        ]}]}});
+        let hooks = owned_hooks(&document);
+        assert_eq!(hooks[0].commands.len(), 3);
+        assert!(hooks[0].commands.iter().any(|command| command.quoted));
+        assert_eq!(
+            hooks[0]
+                .commands
+                .iter()
+                .filter(|command| !command.quoted)
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn drift_requires_matcher_arguments_and_quoting_in_one_group() {
+        let template = serde_json::json!({"hooks":{"Stop":[{"matcher":"one","hooks":[{"command":"'/x/bin/amux' event --agent codex --event Stop"}]}]}});
+        let installed = serde_json::json!({"hooks":{"Stop":[
+            {"matcher":"one","hooks":[{"command":"/x/bin/amux event --agent codex --event Stop"}]},
+            {"matcher":"two","hooks":[{"command":"'/x/bin/amux' event --agent codex --event Stop"}]}
+        ]}});
+        assert!(
+            drift_document("test", &template, &installed)
+                .iter()
+                .any(|message| message.contains("launcher quoting drift for Stop"))
+        );
+    }
+
+    #[test]
+    fn drift_reports_the_pre_quoting_command_as_launcher_quoting_drift() {
         let paths = paths();
         install_at(&paths, Mode::Write).unwrap();
         let codex = paths.home.join(".codex/hooks.json");
@@ -634,7 +753,7 @@ mod tests {
             drift_at(&paths)
                 .unwrap()
                 .iter()
-                .any(|line| line.contains("argument drift for Stop"))
+                .any(|line| line.contains("launcher quoting drift for Stop"))
         );
         fs::remove_dir_all(paths.home).unwrap();
     }

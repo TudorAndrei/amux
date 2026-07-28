@@ -1,6 +1,7 @@
 mod config;
 mod daemon;
 mod event;
+mod fsutil;
 mod hooks;
 mod ipc;
 mod model;
@@ -205,7 +206,15 @@ fn cmd_doctor(config: &Config) -> i32 {
     println!("state dir: {}", config.state_dir.display());
     println!("stale seconds: {}", config.stale_seconds);
     println!("events compact bytes: {}", config.events_compact_bytes);
-    println!("lock timeout seconds: {}", config.lock_timeout_seconds);
+    println!(
+        "locking: {}",
+        if config.locking_enabled {
+            "enabled"
+        } else {
+            "disabled (AMUX_LOCK=0)"
+        }
+    );
+    println!("events per session: {}", config.events_per_session);
     for override_name in &config.rejected_overrides {
         println!("config: rejected {override_name}; using default");
     }

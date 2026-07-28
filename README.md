@@ -34,8 +34,11 @@ compacts once it reaches `${AMUX_EVENTS_COMPACT_BYTES:-8388608}` bytes. Set
 are capped at 4 KiB (with short strings and shallow containers) so a single
 event cannot defeat retention.
 The state directory is owner-only (`0700`), and both files are owner-readable
-and writable (`0600`), including daemon-less fallback writes. State writes are
-serialized so hooks arriving at the same time cannot overwrite one another.
+and writable (`0600`), including daemon-less fallback writes. State writes use
+an advisory `flock` on `state.lock` so hooks arriving at the same time cannot
+overwrite one another. On NFS, `flock` may block forever even for a non-blocking
+request; if `AMUX_STATE_DIR` is on a network mount, set `AMUX_LOCK=0` to disable
+this protection explicitly.
 
 Each state record contains:
 

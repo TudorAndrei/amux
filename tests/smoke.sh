@@ -219,7 +219,7 @@ done
 wait
 jq -e '.records | length == 40' "$RACE_STATE_DIR/state.json" >/dev/null
 test "$(wc -l <"$RACE_STATE_DIR/events.jsonl" | tr -d ' ')" = "40"
-test ! -e "$RACE_STATE_DIR/state.lock"
+test -f "$RACE_STATE_DIR/state.lock"
 rm -rf "$RACE_STATE_DIR"
 
 printf 'ok\n'

@@ -220,14 +220,34 @@ fn cli_clear_doctor_and_option_contracts_are_preserved() {
         .env("PATH", &path)
         .env("AMUX_STALE_SECONDS", "-1")
         .env("AMUX_EVENTS_COMPACT_BYTES", "0")
-        .env("AMUX_EVENTS_PER_SESSION", "0")
+        .env("AMUX_EVENTS_PER_SESSION", "not-a-number")
         .arg("doctor")
         .output()
         .unwrap();
     let invalid_doctor = String::from_utf8(invalid_doctor.stdout).unwrap();
     assert!(invalid_doctor.contains("rejected AMUX_STALE_SECONDS"));
     assert!(invalid_doctor.contains("rejected AMUX_EVENTS_COMPACT_BYTES"));
-    assert!(!invalid_doctor.contains("rejected AMUX_EVENTS_PER_SESSION"));
+    assert!(invalid_doctor.contains("rejected AMUX_EVENTS_PER_SESSION"));
+    let zero_doctor = amux(&state)
+        .env("PATH", &path)
+        .env("AMUX_EVENTS_PER_SESSION", "0")
+        .arg("doctor")
+        .output()
+        .unwrap();
+    let zero_doctor = String::from_utf8(zero_doctor.stdout).unwrap();
+    assert!(!zero_doctor.contains("rejected AMUX_EVENTS_PER_SESSION"));
+    assert!(zero_doctor.contains("events per session: 0"));
+    let valid_doctor = amux(&state)
+        .env("PATH", &path)
+        .env("AMUX_EVENTS_PER_SESSION", "17")
+        .arg("doctor")
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8(valid_doctor.stdout)
+            .unwrap()
+            .contains("events per session: 17")
+    );
     assert!(amux(&state).arg("clear").status().unwrap().success());
     assert!(!state.join("state.json").exists());
     assert!(!state.join("events.jsonl").exists());
@@ -557,7 +577,7 @@ fn concurrent_event_writes_leave_valid_state_and_log() {
             .count(),
         40
     );
-    assert!(!state.join("state.lock").exists());
+    assert!(state.join("state.lock").is_file());
     fs::remove_dir_all(state).unwrap();
 }
 

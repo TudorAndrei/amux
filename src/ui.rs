@@ -472,13 +472,14 @@ mod tests {
     }
 
     #[test]
-    fn draw_error_unwinds_through_terminal_restore_guard() {
+    fn restore_guard_runs_on_early_return() {
         let restored = std::cell::Cell::new(false);
-        let result: Result<(), &str> = {
+        let fallible = || -> Result<(), &str> {
             let _guard = RestoreGuard::new(|| restored.set(true));
-            Err("draw failed")
+            Err("draw failed")?;
+            Ok(())
         };
-        assert_eq!(result.unwrap_err(), "draw failed");
+        assert_eq!(fallible().unwrap_err(), "draw failed");
         assert!(restored.get());
     }
 

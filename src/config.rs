@@ -7,9 +7,9 @@ pub struct Config {
     pub stale_seconds: i64,
     pub events_per_session: usize,
     pub events_compact_bytes: u64,
-    pub lock_timeout_seconds: u64,
     /// Internal acquisition budget; kept explicit so lock behaviour is testable.
     pub lock_acquire_timeout_ms: u64,
+    pub locking_enabled: bool,
     pub rejected_overrides: Vec<String>,
     pub hide_subagents: bool,
     pub use_color: bool,
@@ -38,10 +38,16 @@ impl Config {
             },
             Err(_) => 86_400,
         };
-        let events_per_session = env::var("AMUX_EVENTS_PER_SESSION")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(200);
+        let events_per_session = match env::var("AMUX_EVENTS_PER_SESSION") {
+            Ok(value) => match value.parse::<usize>() {
+                Ok(value) => value,
+                Err(_) => {
+                    rejected_overrides.push("AMUX_EVENTS_PER_SESSION".to_owned());
+                    200
+                }
+            },
+            Err(_) => 200,
+        };
         let events_compact_bytes = match env::var("AMUX_EVENTS_COMPACT_BYTES") {
             Ok(value) => match value.parse::<u64>() {
                 Ok(value) if value > 0 => value,
@@ -52,11 +58,7 @@ impl Config {
             },
             Err(_) => 8 * 1024 * 1024,
         };
-        let lock_timeout_seconds = env::var("AMUX_LOCK_TIMEOUT_SECONDS")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .filter(|value: &u64| *value > 0)
-            .unwrap_or(30);
+        let locking_enabled = env::var("AMUX_LOCK").as_deref() != Ok("0");
         let hide_subagents = !matches!(
             env::var("AMUX_HIDE_SUBAGENTS").as_deref(),
             Ok("0" | "false" | "FALSE" | "no" | "NO" | "off" | "OFF")
@@ -69,8 +71,8 @@ impl Config {
             stale_seconds,
             events_per_session,
             events_compact_bytes,
-            lock_timeout_seconds,
             lock_acquire_timeout_ms: 5_000,
+            locking_enabled,
             rejected_overrides,
             hide_subagents,
             use_color,
@@ -83,7 +85,7 @@ impl Config {
     pub fn events_file(&self) -> PathBuf {
         self.state_dir.join("events.jsonl")
     }
-    pub fn lock_dir(&self) -> PathBuf {
+    pub fn lock_file(&self) -> PathBuf {
         self.state_dir.join("state.lock")
     }
     pub fn compacting_events_file(&self) -> PathBuf {

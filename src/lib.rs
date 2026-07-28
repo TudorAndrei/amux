@@ -1,6 +1,7 @@
 pub mod config;
 pub mod daemon;
 pub mod event;
+pub mod fsutil;
 pub mod ipc;
 pub mod model;
 pub mod render;
