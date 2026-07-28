@@ -1,5 +1,40 @@
 # Known Issues
 
+## Deferred work
+
+Confirmed findings from the `improve` audit at commit `8cf1622`
+(2026-07-24). Plans 001–005 from that audit shipped; these were deliberately
+left out of that batch and are still open. Code anchors below were re-verified
+on 2026-07-27; the priority framing is the audit's.
+
+- **Terminal control-character escaping.** Untrusted strings — tmux pane
+  titles, hook-supplied `reason` values — reach the status line and picker
+  without escaping. S-sized security hardening, deferred from the batch to keep
+  behavioral-output changes separately reviewable.
+- **Recoverable state lock.** `state::acquire` (`src/state.rs:36`) takes a
+  `mkdir` lock and releases it via `Lock`'s `Drop`. A process killed mid-write
+  leaves `state.lock` behind permanently, after which every writer fails with
+  "timed out waiting for state lock" 5 s later. No staleness detection or
+  recovery. Adjacent to the event-log compaction work in `PLAN.md` Phase 1,
+  which takes the same lock.
+- **Hook-config atomicity and quoting.** `write_text` (`src/hooks.rs:277`)
+  writes with a plain `fs::write`, so a crash or a full disk mid-write can
+  truncate `~/.codex/hooks.json` or `~/.claude/settings.json`. A timestamped
+  `backup()` runs first, which limits the damage but does not prevent it; the
+  state path already uses temp-file-plus-rename and this should too. Adjacent to
+  `PLAN.md` Phase 2, which reads the same files.
+- **Daemon request-size limits.** A client can send an arbitrarily large
+  request body on the daemon socket; nothing caps it before deserialization.
+- **Projection indexing.** `sessions::views_from` re-scans every pane and every
+  record per session on each rebuild, which runs on every topology change.
+- **Picker error cleanup.** Error paths in the picker leave the terminal state
+  restored inconsistently.
+- **Stale-duration validation.** `AMUX_STALE_SECONDS` (`src/config.rs:25`)
+  parses into `i64` with no range check. A negative value puts the prune cutoff
+  in the future, so every record is discarded on the next write.
+- **Release-DX alignment.** Release tooling and local task definitions have
+  drifted apart.
+
 ## Linux CI: tmux control-monitor subscription closes
 
 - Status: fixed
