@@ -489,6 +489,21 @@ mod tests {
     }
 
     #[test]
+    fn fresh_lock_is_respected_until_the_acquisition_budget_expires() {
+        let config = config(200);
+        ensure_private_dir(&config).unwrap();
+        fs::create_dir(config.lock_dir()).unwrap();
+        fs::write(config.lock_dir().join("heartbeat"), "live").unwrap();
+        let started = std::time::Instant::now();
+        assert_eq!(
+            acquire(&config).unwrap_err(),
+            "timed out waiting for state lock"
+        );
+        assert!(started.elapsed() >= Duration::from_secs(5));
+        fs::remove_dir_all(config.state_dir).unwrap();
+    }
+
+    #[test]
     fn lock_heartbeat_refreshes_a_long_hold() {
         let mut config = config(200);
         config.lock_timeout_seconds = 1;

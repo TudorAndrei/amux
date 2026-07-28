@@ -151,9 +151,16 @@ fn is_amux_command(command: &str) -> bool {
 /// The launcher location is intentionally ignored: source, TPM, and release
 /// installs put the same command at different absolute paths.
 fn command_arguments(command: &str) -> Option<String> {
-    command
-        .find(" event ")
-        .map(|index| command[index + " event".len()..].trim().to_owned())
+    command.find(" event ").map(|index| {
+        // Preserve the launcher quoting style while deliberately ignoring its
+        // location: an old unquoted install must show as drift.
+        let style = if command[..index].ends_with('\'') {
+            "quoted"
+        } else {
+            "unquoted"
+        };
+        format!("{style}:{}", command[index + " event".len()..].trim())
+    })
 }
 
 fn install_at(paths: &Paths, mode: Mode) -> Result<(), String> {
@@ -260,8 +267,14 @@ fn replace_launcher(value: &mut Value, launcher: &str) {
 }
 
 fn template_text(template: &Path, launcher: &Path) -> Result<String, String> {
+    // Text assets are JavaScript/TypeScript templates where the placeholder is
+    // already inside a quoted string. Insert JSON string contents, not shell
+    // syntax (which would make Node try to execute the quote characters).
+    let encoded =
+        serde_json::to_string(&launcher.to_string_lossy()).map_err(|error| error.to_string())?;
+    let escaped = &encoded[1..encoded.len() - 1];
     fs::read_to_string(template)
-        .map(|text| text.replace("__AMUX_BIN__", &shell_quote(launcher)))
+        .map(|text| text.replace("__AMUX_BIN__", escaped))
         .map_err(|error| format!("cannot read {}: {error}", template.display()))
 }
 
@@ -549,6 +562,28 @@ mod tests {
             String::from_utf8(output.stdout).unwrap(),
             launcher.to_string_lossy()
         );
+        let text = template_text(
+            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("hooks/opencode/amux.js"),
+            &launcher,
+        )
+        .unwrap();
+        let expected = format!(
+            "const AMUX_BIN = {}",
+            serde_json::to_string(&launcher.to_string_lossy()).unwrap()
+        );
+        assert!(text.contains(&expected));
+    }
+
+    #[test]
+    fn failed_atomic_write_keeps_the_original_configuration() {
+        let paths = paths();
+        let destination = paths.home.join("settings.json");
+        fs::write(&destination, "original").unwrap();
+        let temporary = destination.with_extension(format!("amux.tmp.{}", std::process::id()));
+        fs::write(&temporary, "interrupted").unwrap();
+        assert!(write_text(&destination, "replacement", "test", Mode::Write).is_err());
+        assert_eq!(fs::read_to_string(&destination).unwrap(), "original");
+        fs::remove_dir_all(paths.home).unwrap();
     }
 
     #[test]
@@ -581,6 +616,27 @@ mod tests {
             assert!(command.contains(&format!("--status {status}")));
             assert!(command.contains(&format!("--attention {attention}")));
         }
+    }
+
+    #[test]
+    fn drift_reports_the_pre_quoting_command_as_an_argument_change() {
+        let paths = paths();
+        install_at(&paths, Mode::Write).unwrap();
+        let codex = paths.home.join(".codex/hooks.json");
+        let mut installed = read_json(&codex).unwrap();
+        let command = installed["hooks"]["Stop"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .replace('\'', "");
+        installed["hooks"]["Stop"][0]["hooks"][0]["command"] = Value::String(command);
+        write_json(&codex, &installed, "test", Mode::Write).unwrap();
+        assert!(
+            drift_at(&paths)
+                .unwrap()
+                .iter()
+                .any(|line| line.contains("argument drift for Stop"))
+        );
+        fs::remove_dir_all(paths.home).unwrap();
     }
 
     #[test]
@@ -624,7 +680,7 @@ mod tests {
         let command = installed["hooks"]["Stop"][stop_group]["hooks"][0]["command"]
             .as_str()
             .unwrap()
-            .replace("/bin/amux event", "/another/bin/amux event");
+            .replace("/bin/amux' event", "/another/bin/amux' event");
         installed["hooks"]["Stop"][stop_group]["hooks"][0]["command"] = Value::String(command);
         write_json(&codex, &installed, "test", Mode::Write).unwrap();
         assert!(drift_at(&paths).unwrap().is_empty());

@@ -216,6 +216,18 @@ fn cli_clear_doctor_and_option_contracts_are_preserved() {
     let doctor = String::from_utf8(doctor.stdout).unwrap();
     assert!(doctor.contains("tmux: ok (tmux 3.5)"));
     assert!(doctor.contains("state: v1 compatible"));
+    let invalid_doctor = amux(&state)
+        .env("PATH", &path)
+        .env("AMUX_STALE_SECONDS", "-1")
+        .env("AMUX_EVENTS_COMPACT_BYTES", "0")
+        .env("AMUX_EVENTS_PER_SESSION", "0")
+        .arg("doctor")
+        .output()
+        .unwrap();
+    let invalid_doctor = String::from_utf8(invalid_doctor.stdout).unwrap();
+    assert!(invalid_doctor.contains("rejected AMUX_STALE_SECONDS"));
+    assert!(invalid_doctor.contains("rejected AMUX_EVENTS_COMPACT_BYTES"));
+    assert!(!invalid_doctor.contains("rejected AMUX_EVENTS_PER_SESSION"));
     assert!(amux(&state).arg("clear").status().unwrap().success());
     assert!(!state.join("state.json").exists());
     assert!(!state.join("events.jsonl").exists());
