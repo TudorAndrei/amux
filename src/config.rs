@@ -8,6 +8,8 @@ pub struct Config {
     pub events_per_session: usize,
     pub events_compact_bytes: u64,
     pub lock_timeout_seconds: u64,
+    /// Internal acquisition budget; kept explicit so lock behaviour is testable.
+    pub lock_acquire_timeout_ms: u64,
     pub rejected_overrides: Vec<String>,
     pub hide_subagents: bool,
     pub use_color: bool,
@@ -68,6 +70,7 @@ impl Config {
             events_per_session,
             events_compact_bytes,
             lock_timeout_seconds,
+            lock_acquire_timeout_ms: 5_000,
             rejected_overrides,
             hide_subagents,
             use_color,

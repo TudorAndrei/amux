@@ -20,6 +20,26 @@ use std::time::Duration;
 /// the worker is still acquiring its lock.
 const MATCHER_TICK_TIMEOUT_MS: u64 = 10;
 
+struct RestoreGuard<F: FnOnce()> {
+    restore: Option<F>,
+}
+
+impl<F: FnOnce()> RestoreGuard<F> {
+    fn new(restore: F) -> Self {
+        Self {
+            restore: Some(restore),
+        }
+    }
+}
+
+impl<F: FnOnce()> Drop for RestoreGuard<F> {
+    fn drop(&mut self) {
+        if let Some(restore) = self.restore.take() {
+            restore();
+        }
+    }
+}
+
 pub fn rows(config: &Config) -> Result<String, String> {
     let views = crate::daemon::cached_views(config)
         .or_else(|_| state::load(config).map(|state| sessions::views(config, &state)))?;
@@ -33,13 +53,7 @@ pub fn run(config: Config) -> Result<(), String> {
 fn run_native(config: Config) -> Result<(), String> {
     let (updates, initial) = updates(config.clone());
     let mut app = App::new(initial);
-    struct TerminalGuard;
-    impl Drop for TerminalGuard {
-        fn drop(&mut self) {
-            ratatui::restore();
-        }
-    }
-    let _terminal_guard = TerminalGuard;
+    let _terminal_guard = RestoreGuard::new(ratatui::restore);
     let mut terminal = ratatui::init();
     let outcome = loop {
         apply_updates(&mut app, &updates);
@@ -455,6 +469,17 @@ mod tests {
             .into_iter()
             .map(|session| session.session.as_str())
             .collect()
+    }
+
+    #[test]
+    fn draw_error_unwinds_through_terminal_restore_guard() {
+        let restored = std::cell::Cell::new(false);
+        let result: Result<(), &str> = {
+            let _guard = RestoreGuard::new(|| restored.set(true));
+            Err("draw failed")
+        };
+        assert_eq!(result.unwrap_err(), "draw failed");
+        assert!(restored.get());
     }
 
     #[test]

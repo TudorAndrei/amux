@@ -37,7 +37,7 @@ fn restrict_file(path: &std::path::Path) -> Result<(), String> {
 
 fn acquire(config: &Config) -> Result<(), String> {
     ensure_private_dir(config)?;
-    for _ in 0..500 {
+    for _ in 0..(config.lock_acquire_timeout_ms / 10).max(1) {
         match fs::create_dir(config.lock_dir()) {
             Ok(()) => return Ok(()),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
@@ -62,6 +62,7 @@ fn acquire(config: &Config) -> Result<(), String> {
 
 struct Lock<'a> {
     config: &'a Config,
+    token: String,
     stop: Option<mpsc::Sender<()>>,
     heartbeat: Option<thread::JoinHandle<()>>,
 }
@@ -75,12 +76,13 @@ impl<'a> Lock<'a> {
         let _ = fs::write(&marker, &token);
         let (stop, receiver) = mpsc::channel();
         let interval = Duration::from_secs((config.lock_timeout_seconds / 2).clamp(1, 15));
+        let worker_token = token.clone();
         let heartbeat = thread::spawn(move || {
             loop {
                 if receiver.recv_timeout(interval).is_ok() {
                     break;
                 }
-                if fs::read_to_string(&marker).ok().as_deref() != Some(&token) {
+                if fs::read_to_string(&marker).ok().as_deref() != Some(&worker_token) {
                     break;
                 }
                 let _ = OpenOptions::new()
@@ -93,6 +95,7 @@ impl<'a> Lock<'a> {
         });
         Self {
             config,
+            token,
             stop: Some(stop),
             heartbeat: Some(heartbeat),
         }
@@ -105,7 +108,10 @@ impl Drop for Lock<'_> {
         if let Some(heartbeat) = self.heartbeat.take() {
             let _ = heartbeat.join();
         }
-        let _ = fs::remove_dir_all(self.config.lock_dir());
+        let marker = self.config.lock_dir().join("heartbeat");
+        if fs::read_to_string(marker).ok().as_deref() == Some(&self.token) {
+            let _ = fs::remove_dir_all(self.config.lock_dir());
+        }
     }
 }
 
@@ -374,6 +380,7 @@ mod tests {
             events_per_session,
             events_compact_bytes: 1,
             lock_timeout_seconds: 30,
+            lock_acquire_timeout_ms: 5_000,
             rejected_overrides: Vec::new(),
             hide_subagents: true,
             use_color: false,
@@ -489,8 +496,27 @@ mod tests {
     }
 
     #[test]
-    fn fresh_lock_is_respected_until_the_acquisition_budget_expires() {
+    fn dispossessed_owner_cannot_delete_a_successor_lock() {
         let config = config(200);
+        acquire(&config).unwrap();
+        let first = Lock::new(&config);
+        fs::remove_dir_all(config.lock_dir()).unwrap();
+        acquire(&config).unwrap();
+        let second = Lock::new(&config);
+        let successor_token = fs::read_to_string(config.lock_dir().join("heartbeat")).unwrap();
+        drop(first);
+        assert_eq!(
+            fs::read_to_string(config.lock_dir().join("heartbeat")).unwrap(),
+            successor_token
+        );
+        drop(second);
+        fs::remove_dir_all(config.state_dir).unwrap();
+    }
+
+    #[test]
+    fn fresh_lock_is_respected_until_the_acquisition_budget_expires() {
+        let mut config = config(200);
+        config.lock_acquire_timeout_ms = 200;
         ensure_private_dir(&config).unwrap();
         fs::create_dir(config.lock_dir()).unwrap();
         fs::write(config.lock_dir().join("heartbeat"), "live").unwrap();
@@ -499,21 +525,21 @@ mod tests {
             acquire(&config).unwrap_err(),
             "timed out waiting for state lock"
         );
-        assert!(started.elapsed() >= Duration::from_secs(5));
+        assert!(started.elapsed() >= Duration::from_millis(200));
         fs::remove_dir_all(config.state_dir).unwrap();
     }
 
     #[test]
     fn lock_heartbeat_refreshes_a_long_hold() {
         let mut config = config(200);
-        config.lock_timeout_seconds = 1;
+        config.lock_timeout_seconds = 2;
         acquire(&config).unwrap();
         let _lock = Lock::new(&config);
         let first = fs::metadata(config.lock_dir().join("heartbeat"))
             .unwrap()
             .modified()
             .unwrap();
-        thread::sleep(Duration::from_millis(1_100));
+        thread::sleep(Duration::from_millis(2_500));
         let refreshed = fs::metadata(config.lock_dir().join("heartbeat"))
             .unwrap()
             .modified()
