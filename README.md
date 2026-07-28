@@ -7,7 +7,7 @@ Initial scope:
 - Collect agent lifecycle events from global hooks.
 - Track Codex, Claude, Pi, and opencode sessions.
 - Surface agents that need user attention.
-- Provide tmux status and picker integrations.
+- Provide a live tmux picker integration.
 
 ## State Model
 
@@ -24,7 +24,7 @@ ${XDG_STATE_HOME:-$HOME/.local/state}/amux/state.json
 ${XDG_STATE_HOME:-$HOME/.local/state}/amux/events.jsonl
 ```
 
-The cached `state.json` is optimized for tmux status and picker rendering.
+The cached `state.json` is optimized for picker rendering.
 `events.jsonl` is a bounded transition log for debugging hook normalization:
 unchanged repeated events are not appended. The daemon retains at most
 `${AMUX_EVENTS_PER_SESSION:-200}` events for each
@@ -71,7 +71,7 @@ Status and list commands ignore records older than
 `${AMUX_STALE_SECONDS:-86400}` seconds.
 
 Session views only surface agents associated with tmux sessions. `amux sessions`,
-the picker, and the tmux status segment ignore hook records captured outside
+the picker ignores hook records captured outside
 tmux; those records remain available through `amux list` for debugging. Session
 views also hide spawned subagents by default, including hook records with
 subagent metadata such as `agent_id` or `agent_type`, UUID-only records without
@@ -110,7 +110,7 @@ x86_64/arm64.
 The Rust daemon starts lazily after the first hook event or picker launch. It
 owns a private `${XDG_STATE_HOME:-$HOME/.local/state}/amux/amux.sock`, writes
 the version-one state and event log atomically, and caches session rows for the
-tmux status segment. If it is unavailable, hook events use a locked one-shot
+picker. If it is unavailable, hook events use a locked one-shot
 write and the next event starts a fresh daemon.
 
 Use `bin/amux doctor` to inspect the selected binary, tmux version, state-file
@@ -176,9 +176,9 @@ After TPM installs amux, write global hooks from its checkout:
 ~/.tmux/plugins/amux/bin/amux install-hooks --write
 ```
 
-Reloading replaces the previously registered amux status command and picker
-binding. The native runtime reuses the version-one state file, and starts its
-daemon lazily on the next hook event or picker launch.
+Reloading installs the picker binding without modifying `status-right`. The
+native runtime reuses the version-one state file and starts its daemon lazily
+on the next hook event or picker launch.
 
 Load the plugin directly for local development:
 
@@ -199,18 +199,14 @@ set -g @amux-picker-key A
 set -g @amux-popup-width 90%
 set -g @amux-popup-height 80%
 set -g @amux-next-attention-key C-a
-set -g @amux-status on
 ```
 
-`@amux-status on` prepends the compact `bin/amux status` segment to
-`status-right`. If you prefer manual control, leave it unset and add:
+## Upgrade note
 
-```tmux
-#(/path/to/amux/bin/amux status)
-```
-
-Hook events request an immediate tmux status redraw. The compact indicator
-counts agents rather than tmux sessions.
+The `amux status` command and `@amux-status`/`status-right` integration were
+removed. Remove any `#(.../amux status)` segment from existing tmux configs;
+amux no longer changes `status-right`. The picker continues to receive live
+daemon updates.
 
 Status indicators are colored by default in tmux and in the picker:
 

@@ -1,162 +1,171 @@
-# TODO: Fix stuck Codex status and bound the event log
+# TODO: Remove the status-line integration and clear the deferred-work backlog
 
-## Phase 1: Bound the event log
+## Phase 1: Remove the tmux status-line integration
 
-- [x] `src/config.rs`: add `events_per_session` (`AMUX_EVENTS_PER_SESSION`,
-      default 200, `0` disables) and `events_compact_bytes`
-      (`AMUX_EVENTS_COMPACT_BYTES`, default 8 MiB).
-- [x] `src/event.rs`: add `compact_raw` — allowlisted strings ≤ 1 KiB, other
-      strings ≤ 256 B, ≤ 32 entries per container, nesting ≤ 3, total serialized
-      ≤ 4 KiB. Allowlist: `session_id`, `cwd`, `hook_event_name`, `source`,
-      `turn_id`, `tool_name`, `permission_mode`, `reason`, `agent_id`,
-      `agent_type`, `parent_agent_id`, `parent_session_id`, `is_subagent`.
-- [x] Call `compact_raw` from `normalize_at`; cap `Record.reason` at 256 B and
-      `Record.cwd` at 1 KiB there so the outer record is bounded too.
-- [x] `src/state.rs`: add `compact_events(config, retain_keys)` — (1) rename to
-      `.compacting` under the lock and release, (2) stream off-lock into per-key
-      ring buffers carrying original ordinals, (3) sort retained by ordinal and
-      write `.retained`, (4) re-acquire briefly to concatenate retained + live
-      log, fsync, rename, fsync dir, unlink `.compacting`.
-- [x] Drop lines whose key is absent from `state.records`, plus key-less and
-      unparseable lines.
-- [x] `src/state.rs`: add `adopt_orphaned_log` for a `.compacting` file left
-      by a crash.
-- [x] `src/daemon.rs`: call `adopt_orphaned_log` then `compact_events` in
-      `run` before serving; a single-flight maintenance thread compacts when a
-      write leaves the log over `events_compact_bytes`. Never compact on a
-      connection thread, never on the `AMUX_NO_DAEMON` path.
-- [x] Test `compact_raw`: allowlisted keys within budget byte-identical, a 10 KB
-      `last_assistant_message` truncated to 256 B, a 100-key object trimmed to
-      32, total serialized ≤ 4 KiB, `agent_id`/`agent_type` still readable by
-      `sessions.rs::subagent_record`.
-- [x] Test `compact_events`: per-key cap honoured; 500 events on key A do not
-      evict key B; lines for a key absent from `state.records` dropped;
-      cross-pane chronological order preserved (interleave two keys, assert
-      ordinals ascending after rewrite); malformed and key-less lines dropped;
-      output mode `0600`.
-- [x] Test crash safety: leave a `.compacting` file, start the daemon, assert its
-      events are adopted and the live log is intact.
-- [x] Test `AMUX_EVENTS_PER_SESSION=0`: log grows, no compaction runs.
-- [x] Commit: retention implementation and follow-up coverage are committed in
-      `9161f2c`, `8c62a51`, and `469a830`.
+- [x] `amux.tmux`: delete `@amux-status`, `@amux-status-command`, and all
+      `status-right` splice/unsplice logic including the previous-segment
+      cleanup on reload. Keep the picker binding, `next-attention` binding, and
+      the `AMUX_ROOT` export.
+- [x] `src/main.rs`: remove the `Status` subcommand, `cmd_status`, and
+      `refresh_tmux` plus its call site in `cmd_event`.
+- [x] `src/render.rs`: delete `render::status`; keep `list` and `sessions`.
+- [x] `src/daemon.rs`: remove `Shared.status`, `Shared.refresh_pending`,
+      `Request::Status`, `cached_status`, `schedule_refresh`, and all five
+      status-recomputation sites.
+- [x] `src/ipc.rs`: remove `Response.status` and `Response::status`; drop the
+      field from `state` and `health`, and update `daemon::health`'s return
+      tuple and its callers (`cached_views`).
+- [x] `tests/rust_smoke.rs`: delete the status-wiring test at 1228-1316; keep
+      the surrounding plugin-reload coverage and flip it to assert the status
+      options are *not* set.
+- [x] `README.md`: remove the `@amux-status` option and the manual
+      `status-right` recipe; add upgrade guidance for both.
+- [x] Confirm nothing else shells out to `bin/amux status`
+      (`grep -rn "amux status"` across the repo, including `scripts/`).
+- [x] Commit with a `BREAKING CHANGE` trailer:
+      `feat!: remove the tmux status-line integration`
 
-## Phase 2: Report hook drift from `amux doctor`
+## Phase 2: Make the state lock recoverable
 
-- [x] `src/hooks.rs`: `pub fn drift()` + private `drift_at(paths)`, mirroring
-      `install` / `install_at` (`Paths` is private).
-- [x] Report missing template events, stale amux entries for unshipped events,
-      matcher differences, and argument differences.
-- [x] Compare **only the arguments after `event`**, never the full command
-      string, so a differing launcher path (source vs TPM vs release archive) is
-      not drift.
-- [x] Reuse the `bin/amux event --agent` predicate from `remove_matching` so
-      third-party hooks on the same events are never reported.
-- [x] Limit scope to the JSON-merged integrations (Codex, Claude); do not claim
-      Pi/opencode text templates are covered.
-- [x] Wire into `Doctor` in `src/main.rs` with `amux install-hooks --write` as
-      the printed remedy; exit code unchanged.
-- [x] Test fixture homes: current install → no drift; install missing
-      `PreToolUse` → reports exactly that; install with a *different launcher
-      path* but identical arguments → no drift; old flag-less `Stop` command →
-      argument drift; changed matcher → matcher drift; foreign hook on `Stop` →
-      not reported.
-- [x] Run `amux doctor` against the real `~/.codex/hooks.json` before
-      re-installing; confirm it names the four stale entries.
-- [x] Commit: doctor drift support is included in `9161f2c`.
+- [x] `src/config.rs`: add `lock_timeout_seconds` from
+      `AMUX_LOCK_TIMEOUT_SECONDS`, default 30.
+- [x] `src/state.rs::acquire`: on `AlreadyExists`, take over the lock directory
+      when its mtime exceeds the takeover timeout, then retry the create once;
+      keep looping if another process wins the race.
+- [x] Refresh the lock directory's mtime on acquisition.
+- [x] Keep the existing 5 s acquisition budget unchanged.
+- [x] Test: a stale lock directory is taken over and `write_event` succeeds.
+- [x] Test: a fresh lock directory is respected and the writer still reports
+      "timed out waiting for state lock".
+- [x] Test: two concurrent takeovers leave exactly one winner and valid
+      `state.json`.
+- [x] Commit: `fix(state): take over an abandoned state lock`
 
-## Phase 3: Re-model the Codex hook set, with template-level tests
+## Phase 3: Write hook configuration atomically and quote the launcher path
 
-- [x] Confirm with codex-cli whether `PreCompact`, `PostCompact`, and
-      `SessionEnd` accept or require a `matcher` **before** writing the template.
-- [x] Rewrite `hooks/codex/hooks.json`: nine events, explicit `--status` /
-      `--attention` on every command, `SessionStart` matcher narrowed to
-      `startup|resume|clear`.
-- [x] `src/event.rs`: add the `sessionend` / `session_end` → `offline` branch
-      **ahead of** the `["stop","end","idle","done","complete"] -> done` rule.
-- [x] `src/sessions.rs`: delete the `UserPromptSubmit -> running` fixup in
-      `views_from`.
-- [x] Template contract test: parse `hooks/codex/hooks.json`, assert all nine
-      events with exact matchers and `--status` / `--attention` flags. Confirm it
-      fails on `main`.
-- [x] Rendered-install test: `install_at` into a fixture `HOME`, read back
-      `~/.codex/hooks.json`, execute the generated command for each of the nine
-      events against a temp state dir, assert the resulting record status.
-      Confirm it fails on `main` (no `PreToolUse` entry exists to execute).
-- [x] Do **not** re-add a hand-fed `UserPromptSubmit → Stop → PreToolUse` replay
-      test — verified to pass on the released binary already, since
-      `normalize_at` infers `running` from the event name.
-- [x] Extend `tests/smoke.sh` with `SessionEnd -> offline`, pinning a live
-      `codex` pane so `offline` comes from the record and not the no-agent-panes
-      branch in `views_from`.
-- [x] Verify `bin/amux install-hooks --dry-run` renders all nine events with the
-      absolute launcher path substituted.
-- [x] Commit: Codex hook remodelling is included in `9161f2c`.
+- [x] `src/hooks.rs::write_text`: temp file beside the destination, fsync,
+      rename over; keep the existing `backup()` call.
+- [x] Substitute `__AMUX_BIN__` as a JSON-encoded, shell-quoted value in both
+      `template_json` (src/hooks.rs:236) and `template_text` (src/hooks.rs:242).
+- [x] Confirm `remove_matching`'s `bin/amux event --agent` predicate still
+      matches quoted commands — if not, upgrades duplicate entries instead of
+      replacing them.
+- [x] Test: a launcher path containing a space renders a command the shell
+      parses as a single argument.
+- [x] Test: a launcher path containing `"` and `\` renders valid JSON and
+      installs cleanly (currently fails to parse).
+- [x] Test: an interrupted write leaves the original file intact and readable.
+- [x] Test: `amux doctor` reports the quoting change as drift for an install
+      made by the previous version.
+- [x] Commit:
+      `fix(hooks): write agent configuration atomically with a quoted launcher path`
 
-## Phase 4: Cut the per-hook cost
+## Phase 4: Escape untrusted text before rendering
 
-- [x] Send only `TMUX_PANE` on the daemon path; resolve session and window from
-      the daemon's existing topology. Keep the `tmux display-message` lookups in
-      `current_tmux_context` for the direct fallback path only.
-- [x] Skip the `events.jsonl` append when `status` / `attention` / `reason` are
-      all unchanged for that key; still update state.
-- [x] Coalesce `tmux refresh-client` in the daemon instead of per hook in
-      `cmd_event`.
-- [x] Benchmark a tool-heavy Codex turn before and after (process count, wall
-      clock per hook, bytes appended); record the numbers in the commit body.
-- [x] Test that a status transition is still logged and a no-op repeat is not.
-- [x] Commit: daemon-path performance work is committed in `9161f2c` and
-      `fb16695`.
+- [x] Add a `sanitize` helper that rewrites C0/C1 control characters in caret
+      notation (`\x1b` → `^[`) rather than stripping them.
+- [x] Apply in `render::list`, `render::sessions`, `ui::render_rows`,
+      `ui::row_line`, and `ui::detail_text`.
+- [x] Test: a `reason` containing `\x1b[2J` and a raw newline renders inert and
+      visible (`^[[2J`, `^J`) in each sink.
+- [x] Test: ordinary UTF-8 — CJK, combining marks, emoji — passes through
+      unchanged.
+- [x] Update `picker --rows` fixtures if the escaping changes their output.
+- [x] Commit: `fix(render): neutralise control characters in agent-supplied text`
 
-## Phase 5: Documentation
+## Phase 5: Restore the terminal on every picker exit
 
-- [x] `docs/events.md`: nine-event Codex mapping, turn-scoped `Stop`, no
-      `Notification` hook, no inferred status for shipped hooks, and the
-      tool-less-turn limitation stated plainly.
-- [x] `README.md`: `AMUX_EVENTS_PER_SESSION`, `AMUX_EVENTS_COMPACT_BYTES`,
-      per-key retention with dead-key expiry, payload budget, `offline` in the
-      status table, the `doctor` drift check, the removed `compact` matcher, and
-      (if Phase 4 lands) that `events.jsonl` is a transition log.
-- [x] Upgrade note: re-run `amux install-hooks --write`; `amux doctor` says when.
-- [x] Commit: documentation is committed in `9161f2c` and `6c8d35d`.
+- [x] Replace the bare `ratatui::init()` / `ratatui::restore()` pair in
+      `ui::run_native` with an RAII guard that restores on drop.
+- [x] Confirm every `?` in the loop — `terminal.draw`, `event::poll`,
+      `event::read` — now unwinds through the guard.
+- [x] Test: a draw error propagates and the restore still runs.
+- [x] Manual: kill the picker mid-draw and confirm the shell is left usable.
+- [x] Commit: `fix(picker): restore the terminal when the picker exits with an error`
+
+## Phase 6: Bound daemon request size
+
+- [x] `daemon::handle`: wrap the reader in `.take(MAX_REQUEST_BYTES)` (1 MiB)
+      and reject a request that reaches the limit without a newline.
+- [x] Reply with a structured error instead of closing the connection silently.
+- [x] Test: an oversized request is rejected, the daemon stays up, and the next
+      request is served normally.
+- [x] Test: a normal-sized request is unaffected.
+- [x] Commit: `fix(daemon): reject oversized requests before deserialization`
+
+## Phase 7: Validate configuration ranges
+
+- [x] `src/config.rs`: reject `AMUX_STALE_SECONDS <= 0` and
+      `AMUX_EVENTS_COMPACT_BYTES == 0`, falling back to the documented defaults.
+- [x] Leave `AMUX_EVENTS_PER_SESSION == 0` meaningful — it disables compaction.
+- [x] Surface effective values and any rejected override in `amux doctor`; keep
+      the hook path silent on stderr.
+- [x] Test: each invalid value falls back to its default.
+- [x] Test: `doctor` names the rejected override.
+- [x] Test: `AMUX_EVENTS_PER_SESSION=0` is not reported as invalid.
+- [x] Commit: `fix(config): reject out-of-range environment overrides`
+
+## Phase 8: Run the conventional-commit gate on the real merge path
+
+- [x] Add `cog-check` to the `check` task in `mise.toml` (defined at
+      mise.toml:63 but never invoked by `check`).
+- [x] Add a `cog check --from-latest-tag` step to `prepare-release` in
+      `.github/workflows/ci.yml`, before `cog bump --auto` (ci.yml:66).
+- [x] Keep the existing pull-request step at ci.yml:31.
+- [x] Verify on a scratch branch that a non-conforming commit fails the gate
+      locally, and that the added CI step is one cheap step on a job that
+      already runs.
+- [x] Commit: `ci: check conventional commits on the release path`
+
+## Phase 9: Measure projection cost, then index or reject
+
+- [x] Add a measurement test for `sessions::views_from` at 100 sessions, 200
+      panes, 200 records (~3× the real deployment measured on 2026-07-28: 33
+      sessions, 58 panes, 33 records); record the rebuild time.
+- [x] If above ~5 ms: group panes and records by session name in one pass and
+      index per session, then re-measure and record the improvement.
+- [x] If below: do not implement. Record the measurement in `ISSUES.md` and mark
+      the finding REJECTED as premature.
+- [x] Commit (implemented): `perf(sessions): index panes and records by session`
+- [x] Commit (rejected):
+      `docs(issues): record projection cost measurement and close the finding`
 
 ## Verification
 
-- [x] `mise run check` passes (build, `cargo fmt --check`, clippy `-D warnings`,
-      `cargo test --all-features`, `shellcheck`, `bash -n`, `tests/smoke.sh`).
-- [x] `bin/amux install-hooks --dry-run` against a copy of the real
-      `~/.codex/hooks.json` shows the four stale amux entries removed and nine
-      added, with no non-amux hook touched.
-- [ ] Manual: run `codex` in a tmux pane on a tool-heavy task; confirm the picker
-      holds `running` **across tool calls**, flips to `done` at turn end, and
-      returns to `running` on the next tool call. A brief `done` between tool
-      calls is expected, not a failure.
-- [ ] Manual: confirm the known limitation — a tool-less turn after `Stop` still
-      shows `done` — and that it is documented rather than silently wrong.
-- [ ] Manual: let the session auto-compact; confirm it stays `running` via
-      `PreCompact`/`PostCompact` now that `compact` left the `SessionStart`
-      matcher.
-- [ ] Manual: quit Codex; confirm the row becomes `offline`.
-- [x] Manual: confirmed the real 553 MiB log compacted at daemon startup to
-      864 KiB in 2.18 s. A malformed-byte line initially exposed a recovery bug;
-      `8c5bc7c` now drops such lines, and the retried compaction completed while
-      the pre-existing daemon continued serving the state directory.
-- [x] Edge cases: `PermissionRequest` between `PreToolUse` and `Stop` still shows
-      `attention`, and the following `PostToolUse` clears it; a subagent record
-      carrying `agent_id` is still hidden after `compact_raw`; a pane renumbered
-      mid-session does not evict the other key's events.
-- [x] No regressions for Claude, Pi, opencode: their rows in
-      `amux sessions --json` are unchanged before and after, and their hook
-      templates are untouched in the diff.
-- [x] No regressions in the picker: `bin/amux picker --rows` unchanged for a
-      fixture state containing no `offline` records.
-- [x] Confirm deleting the `views_from` fixup changes no rendered status for a
-      freshly installed hook set (diff `amux sessions --json` before/after on the
-      same fixture state).
+- [x] `mise run check` passes after every phase (build, `cargo fmt --check`,
+      clippy `-D warnings`, `cargo test --all-features`, `shellcheck`, `bash -n`,
+      `tests/smoke.sh`).
+- [x] `mise run package-check` passes.
+- [x] Manual: reload the tmux plugin and confirm `status-right` is left exactly
+      as the user configured it, with no amux segment added and no leftover
+      `@amux-status-command` option.
+- [x] Manual: confirm the picker still updates live after `schedule_refresh` and
+      `refresh_tmux` are gone — it must, since it uses the daemon subscription.
+- [x] Manual: kill a process holding `state.lock`, then confirm the next hook
+      recovers within the takeover timeout instead of wedging.
+- [x] Manual: `amux install-hooks --write` from a path containing a space
+      produces hooks Codex actually executes — verify a real event lands in
+      `state.json`.
+- [x] Manual: feed a hook payload whose `reason` contains an ANSI clear-screen
+      sequence; confirm `amux list`, `amux sessions`, and the picker render it
+      inert.
+- [x] Manual: interrupt the picker mid-draw; confirm the terminal is usable.
+- [x] Edge cases: `AMUX_STALE_SECONDS=-1` no longer discards state;
+      `AMUX_EVENTS_PER_SESSION=0` still disables compaction; a lock taken over
+      mid-write leaves `state.json` parseable.
+- [x] No regressions in the Codex retention work from `ffc6e63`: event
+      compaction, doctor drift, and the nine-event mapping still behave as
+      `docs/events.md` describes.
+- [x] `ISSUES.md` "Deferred work" updated — each item removed as it lands, or
+      annotated with its resolution.
 
 ## Review
 
 - [x] Code reviewed
 - [x] PLAN.md updated if the approach changed during implementation
-- [x] Both new Open Questions answered (Phase 4 scope; `Stop → done` debounce)
+- [x] Open Questions stay resolved as recorded in PLAN.md (hard removal; 30 s
+      takeover; caret-notation escaping; 100/200/200 measurement ceiling)
+- [x] Phase 1 commit carries a `BREAKING CHANGE` trailer and cocogitto bumps
+      accordingly
 - [x] All phase commits are clean, conventional, and leave a working build
-- [ ] TODO.md items all checked off
+- [x] TODO.md items all checked off

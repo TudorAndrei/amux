@@ -33,9 +33,7 @@ struct Cli {
 enum Commands {
     /// Read raw hook JSON from stdin and update amux state.
     Event(EventArgs),
-    /// Print a compact tmux status segment.
-    Status,
-    /// Print all tmux sessions with amux status.
+    /// Print all tmux sessions with amux state.
     Sessions {
         /// Emit the session model as JSON.
         #[arg(long)]
@@ -114,12 +112,6 @@ fn die(message: impl AsRef<str>) -> ExitCode {
     ExitCode::FAILURE
 }
 
-fn refresh_tmux() {
-    if env::var_os("TMUX").is_some() {
-        let _ = Command::new("tmux").args(["refresh-client", "-S"]).output();
-    }
-}
-
 fn cmd_event(config: &Config, args: EventArgs) -> Result<(), String> {
     let mut source = String::new();
     io::stdin()
@@ -174,7 +166,6 @@ fn cmd_event(config: &Config, args: EventArgs) -> Result<(), String> {
         event_fields.insert("key".to_owned(), Value::String(key.clone()));
         let event_log = Value::Object(event_fields);
         let _ = state::write_event(config, key, record, &event_log, timestamp)?;
-        refresh_tmux();
     }
     Ok(())
 }
@@ -212,6 +203,12 @@ fn cmd_doctor(config: &Config) -> i32 {
         env::var("AMUX_ROOT").unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_owned())
     );
     println!("state dir: {}", config.state_dir.display());
+    println!("stale seconds: {}", config.stale_seconds);
+    println!("events compact bytes: {}", config.events_compact_bytes);
+    println!("lock timeout seconds: {}", config.lock_timeout_seconds);
+    for override_name in &config.rejected_overrides {
+        println!("config: rejected {override_name}; using default");
+    }
     println!("rust: ok");
     let mut failure = false;
     if let Some(version) = tmux_version() {
@@ -257,11 +254,11 @@ fn cmd_doctor(config: &Config) -> i32 {
             }
         }
         match daemon::health(config) {
-            Ok((revision, topology, _, _)) if topology.connected => println!(
+            Ok((revision, topology, _)) if topology.connected => println!(
                 "monitor: connected (revision {revision}, reconciled {})",
                 topology.reconciled_at
             ),
-            Ok((revision, topology, _, _)) => {
+            Ok((revision, topology, _)) => {
                 println!("monitor: idle (revision {revision}: {})", topology.error)
             }
             Err(error) => {
@@ -313,16 +310,6 @@ fn cmd_next_attention(config: &Config) -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_status(config: &Config) -> Result<(), String> {
-    let status = daemon::cached_status(config).unwrap_or_else(|_| {
-        state::load(config)
-            .map(|state| render::status(config, &sessions::views(config, &state)))
-            .unwrap_or_default()
-    });
-    print!("{status}");
-    Ok(())
-}
-
 fn session_views(config: &Config) -> Result<Vec<model::SessionView>, String> {
     daemon::cached_views(config)
         .or_else(|_| state::load(config).map(|state| sessions::views(config, &state)))
@@ -349,7 +336,6 @@ fn main() -> ExitCode {
     let config = Config::from_env();
     let result = match command {
         Commands::Event(args) => cmd_event(&config, args).map(|_| 0),
-        Commands::Status => cmd_status(&config).map(|_| 0),
         Commands::List { json: false } => state::load(&config).map(|state| {
             let text = render::list(&sessions::list_records(&config, &state));
             if !text.is_empty() {

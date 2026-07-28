@@ -33,6 +33,13 @@ pub fn run(config: Config) -> Result<(), String> {
 fn run_native(config: Config) -> Result<(), String> {
     let (updates, initial) = updates(config.clone());
     let mut app = App::new(initial);
+    struct TerminalGuard;
+    impl Drop for TerminalGuard {
+        fn drop(&mut self) {
+            ratatui::restore();
+        }
+    }
+    let _terminal_guard = TerminalGuard;
     let mut terminal = ratatui::init();
     let outcome = loop {
         apply_updates(&mut app, &updates);
@@ -48,7 +55,6 @@ fn run_native(config: Config) -> Result<(), String> {
             break outcome;
         }
     };
-    ratatui::restore();
     if let Some(session) = outcome {
         crate::tmux::switch_client(&session.session, &session.pane)?;
     }
@@ -323,11 +329,11 @@ fn row_line(session: &&SessionView) -> Line<'static> {
         Span::styled(format!("{icon} "), Style::default().fg(color)),
         Span::raw(format!(
             "{:<22} {:>2} {:>5} {:<8} {}",
-            session.session,
+            crate::render::sanitize(&session.session),
             session.agent_count,
             age(session.last_attached),
-            session.pane,
-            clean_reason(session),
+            crate::render::sanitize(&session.pane),
+            crate::render::sanitize(&clean_reason(session)),
         )),
     ])
 }
@@ -339,7 +345,10 @@ fn detail_text(session: &SessionView) -> String {
         .map(|agent| {
             format!(
                 "{}  {:<9} {:<10} {}",
-                agent.pane, agent.agent, agent.status, agent.reason
+                crate::render::sanitize(&agent.pane),
+                crate::render::sanitize(&agent.agent),
+                crate::render::sanitize(&agent.status),
+                crate::render::sanitize(&agent.reason)
             )
         })
         .collect::<Vec<_>>()
@@ -370,13 +379,16 @@ fn render_rows(sessions: &[SessionView], color: bool) -> String {
             };
             format!(
                 "{}\t{}\t{}\t{} {:<34} {:>5}  {}",
-                session.session,
-                session.pane,
-                session.cwd,
+                crate::render::sanitize(&session.session),
+                crate::render::sanitize(&session.pane),
+                crate::render::sanitize(&session.cwd),
                 styled,
-                session.session.chars().take(34).collect::<String>(),
+                crate::render::sanitize(&session.session)
+                    .chars()
+                    .take(34)
+                    .collect::<String>(),
                 age(session.last_attached),
-                clean_reason(session)
+                crate::render::sanitize(&clean_reason(session))
             )
         })
         .collect::<Vec<_>>()

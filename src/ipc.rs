@@ -1,5 +1,4 @@
-use crate::model::SessionView;
-use crate::model::State;
+use crate::model::{SessionView, State};
 use crate::tmux::Topology;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -13,7 +12,6 @@ pub enum Request {
     Subscribe,
     Ping,
     Shutdown,
-    Status,
     Health,
 }
 
@@ -42,8 +40,6 @@ pub struct Response {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub views: Option<Vec<SessionView>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub status: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
@@ -54,50 +50,33 @@ impl Response {
             state: None,
             topology: None,
             views: None,
-            status: None,
             error: None,
         }
     }
-    pub fn state(
-        revision: u64,
-        state: State,
-        topology: Topology,
-        views: Vec<SessionView>,
-        status: String,
-    ) -> Self {
+    pub fn error(message: impl Into<String>) -> Self {
+        Self {
+            revision: 0,
+            state: None,
+            topology: None,
+            views: None,
+            error: Some(message.into()),
+        }
+    }
+    pub fn state(revision: u64, state: State, topology: Topology, views: Vec<SessionView>) -> Self {
         Self {
             revision,
             state: Some(state),
             topology: Some(topology),
             views: Some(views),
-            status: Some(status),
             error: None,
         }
     }
-
-    pub fn status(revision: u64, status: String) -> Self {
-        Self {
-            revision,
-            state: None,
-            topology: None,
-            views: None,
-            status: Some(status),
-            error: None,
-        }
-    }
-
-    pub fn health(
-        revision: u64,
-        topology: Topology,
-        views: Vec<SessionView>,
-        status: String,
-    ) -> Self {
+    pub fn health(revision: u64, topology: Topology, views: Vec<SessionView>) -> Self {
         Self {
             revision,
             state: None,
             topology: Some(topology),
             views: Some(views),
-            status: Some(status),
             error: None,
         }
     }

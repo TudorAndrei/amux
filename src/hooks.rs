@@ -1,6 +1,8 @@
 use serde_json::{Map, Value};
 use std::env;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -142,7 +144,8 @@ fn owned_hooks(document: &Value) -> Vec<OwnedHook> {
 }
 
 fn is_amux_command(command: &str) -> bool {
-    command.contains("bin/amux event --agent ")
+    // New commands quote the launcher; retain the legacy spelling for upgrades.
+    command.contains("bin/amux event --agent ") || command.contains("bin/amux' event --agent ")
 }
 
 /// The launcher location is intentionally ignored: source, TPM, and release
@@ -230,16 +233,35 @@ fn uninstall_at(paths: &Paths, mode: Mode) -> Result<(), String> {
     remove_file(&pi_extension, "Pi extension", mode)
 }
 
+fn shell_quote(path: &Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', "'\\\"'\\\"'"))
+}
+
 fn template_json(template: &Path, launcher: &Path) -> Result<Value, String> {
     let text = fs::read_to_string(template)
         .map_err(|error| format!("cannot read {}: {error}", template.display()))?;
-    serde_json::from_str(&text.replace("__AMUX_BIN__", &launcher.to_string_lossy()))
-        .map_err(|error| format!("invalid hook template {}: {error}", template.display()))
+    let mut value: Value = serde_json::from_str(&text)
+        .map_err(|error| format!("invalid hook template {}: {error}", template.display()))?;
+    replace_launcher(&mut value, &shell_quote(launcher));
+    Ok(value)
+}
+
+fn replace_launcher(value: &mut Value, launcher: &str) {
+    match value {
+        Value::String(text) => *text = text.replace("__AMUX_BIN__", launcher),
+        Value::Array(values) => values
+            .iter_mut()
+            .for_each(|value| replace_launcher(value, launcher)),
+        Value::Object(values) => values
+            .values_mut()
+            .for_each(|value| replace_launcher(value, launcher)),
+        _ => {}
+    }
 }
 
 fn template_text(template: &Path, launcher: &Path) -> Result<String, String> {
     fs::read_to_string(template)
-        .map(|text| text.replace("__AMUX_BIN__", &launcher.to_string_lossy()))
+        .map(|text| text.replace("__AMUX_BIN__", &shell_quote(launcher)))
         .map_err(|error| format!("cannot read {}: {error}", template.display()))
 }
 
@@ -387,7 +409,17 @@ fn write_text(path: &Path, text: &str, name: &str, mode: Mode) -> Result<(), Str
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
     backup(path)?;
-    fs::write(path, text).map_err(|error| error.to_string())?;
+    let temporary = path.with_extension(format!("amux.tmp.{}", std::process::id()));
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(&temporary)
+        .map_err(|error| error.to_string())?;
+    file.write_all(text.as_bytes())
+        .map_err(|error| error.to_string())?;
+    file.sync_all().map_err(|error| error.to_string())?;
+    fs::rename(&temporary, path).map_err(|error| error.to_string())?;
     println!("updated {name}: {}", path.display());
     Ok(())
 }
@@ -478,7 +510,7 @@ mod tests {
         let stop = installed["hooks"]["Stop"][0]["hooks"][0]["command"]
             .as_str()
             .unwrap();
-        assert!(stop.contains("/bin/amux event --agent claude --event Stop"));
+        assert!(stop.contains("/bin/amux' event --agent claude --event Stop"));
         assert!(!stop.starts_with("/old/"));
         fs::remove_dir_all(paths.home).unwrap();
     }

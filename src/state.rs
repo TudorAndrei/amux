@@ -6,7 +6,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 pub fn load(config: &Config) -> Result<State, String> {
     let path = config.state_file();
@@ -38,8 +38,21 @@ fn acquire(config: &Config) -> Result<(), String> {
     ensure_private_dir(config)?;
     for _ in 0..500 {
         match fs::create_dir(config.lock_dir()) {
-            Ok(()) => return Ok(()),
+            Ok(()) => {
+                // A fresh mtime is the portable ownership heartbeat used for stale takeover.
+                let _ = fs::File::open(config.lock_dir()).and_then(|file| file.sync_all());
+                return Ok(());
+            }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                let stale = fs::metadata(config.lock_dir())
+                    .ok()
+                    .and_then(|meta| meta.modified().ok())
+                    .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+                    .is_some_and(|age| age > Duration::from_secs(config.lock_timeout_seconds));
+                if stale {
+                    // Removing may race another contender; the following create retries safely.
+                    let _ = fs::remove_dir(config.lock_dir());
+                }
                 thread::sleep(Duration::from_millis(10))
             }
             Err(error) => return Err(error.to_string()),
@@ -319,6 +332,8 @@ mod tests {
             stale_seconds: 86_400,
             events_per_session,
             events_compact_bytes: 1,
+            lock_timeout_seconds: 30,
+            rejected_overrides: Vec::new(),
             hide_subagents: true,
             use_color: false,
         }

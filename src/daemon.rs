@@ -19,6 +19,7 @@ use std::time::Duration;
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// How long a broadcast may block before the subscriber is treated as dead.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_REQUEST_BYTES: u64 = 1024 * 1024;
 
 /// A socket timeout surfaces as `WouldBlock` on Linux and `TimedOut` on macOS;
 /// `Interrupted` means the syscall was cut short by a signal. None of them say
@@ -42,12 +43,10 @@ struct Shared {
     state: State,
     topology: crate::tmux::Topology,
     views: Vec<SessionView>,
-    status: String,
     shutdown: bool,
     monitor_server: Option<PathBuf>,
     monitor_stop: Option<Arc<AtomicBool>>,
     maintenance_active: Arc<AtomicBool>,
-    refresh_pending: Arc<AtomicBool>,
 }
 
 pub fn run(config: Config) -> Result<(), String> {
@@ -77,18 +76,15 @@ pub fn run(config: Config) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     let topology = crate::tmux::Topology::default();
     let views = crate::sessions::views_with_topology(&config, &state, &topology);
-    let status = crate::render::status(&config, &views);
     let shared = Arc::new(Mutex::new(Shared {
         revision: 0,
         state,
         topology,
         views,
-        status,
         shutdown: false,
         monitor_server: None,
         monitor_stop: None,
         maintenance_active: Arc::new(AtomicBool::new(false)),
-        refresh_pending: Arc::new(AtomicBool::new(false)),
     }));
     attach_monitor(&config, &shared, crate::tmux::server_from_env());
     listener
@@ -145,11 +141,28 @@ fn handle(
     let reader_stream = stream.try_clone().map_err(|error| error.to_string())?;
     let mut reader = BufReader::new(reader_stream);
     let mut line = String::new();
-    reader
+    let bytes = reader
+        .by_ref()
+        .take(MAX_REQUEST_BYTES)
         .read_line(&mut line)
         .map_err(|error| error.to_string())?;
-    let request: Request =
-        serde_json::from_str(&line).map_err(|error| format!("invalid daemon request: {error}"))?;
+    if bytes as u64 == MAX_REQUEST_BYTES && !line.ends_with('\n') {
+        reply(
+            &mut stream,
+            &Response::error("daemon request exceeds 1 MiB"),
+        )?;
+        return Ok(());
+    }
+    let request: Request = match serde_json::from_str(&line) {
+        Ok(request) => request,
+        Err(error) => {
+            reply(
+                &mut stream,
+                &Response::error(format!("invalid daemon request: {error}")),
+            )?;
+            return Ok(());
+        }
+    };
     match request {
         Request::Ping => reply(
             &mut stream,
@@ -167,32 +180,17 @@ fn handle(
                 .shutdown = true;
             reply(&mut stream, &Response::ok(0))
         }
-        Request::Status => {
-            let guard = shared
-                .lock()
-                .map_err(|_| "daemon state lock poisoned".to_owned())?;
-            reply(
-                &mut stream,
-                &Response::status(guard.revision, guard.status.clone()),
-            )
-        }
         Request::Health => {
             let guard = shared
                 .lock()
                 .map_err(|_| "daemon state lock poisoned".to_owned())?;
             reply(
                 &mut stream,
-                &Response::health(
-                    guard.revision,
-                    guard.topology.clone(),
-                    guard.views.clone(),
-                    guard.status.clone(),
-                ),
+                &Response::health(guard.revision, guard.topology.clone(), guard.views.clone()),
             )
         }
         Request::Event { request } => {
             let request = *request;
-            let should_refresh = request.tmux_server.is_some();
             attach_monitor(config, &shared, request.tmux_server.clone());
             let tmux = context_for_known_pane(&shared, &request.tmux_pane)
                 .or_else(|| context_from_request(&request))
@@ -226,17 +224,12 @@ fn handle(
             guard.state = state::load(config)?;
             guard.views =
                 crate::sessions::views_with_topology(config, &guard.state, &guard.topology);
-            guard.status = crate::render::status(config, &guard.views);
             guard.revision += 1;
             let revision = guard.revision;
             let retain_keys = guard.state.records.keys().cloned().collect::<BTreeSet<_>>();
-            let server = guard.monitor_server.clone();
             drop(guard);
             if write.over_compact_threshold {
                 schedule_compaction(config.clone(), Arc::clone(&shared), retain_keys);
-            }
-            if should_refresh {
-                schedule_refresh(Arc::clone(&shared), server);
             }
             reply(&mut stream, &Response::ok(revision))
         }
@@ -248,12 +241,11 @@ fn handle(
             guard.state = State::initial();
             guard.views =
                 crate::sessions::views_with_topology(config, &guard.state, &guard.topology);
-            guard.status = crate::render::status(config, &guard.views);
             guard.revision += 1;
             reply(&mut stream, &Response::ok(guard.revision))
         }
         Request::Subscribe => {
-            let (mut revision, initial, topology, views, status) = {
+            let (mut revision, initial, topology, views) = {
                 let guard = shared
                     .lock()
                     .map_err(|_| "daemon state lock poisoned".to_owned())?;
@@ -262,12 +254,11 @@ fn handle(
                     guard.state.clone(),
                     guard.topology.clone(),
                     guard.views.clone(),
-                    guard.status.clone(),
                 )
             };
             reply(
                 &mut stream,
-                &Response::state(revision, initial, topology, views, status),
+                &Response::state(revision, initial, topology, views),
             )?;
             stream
                 .set_write_timeout(Some(WRITE_TIMEOUT))
@@ -316,7 +307,6 @@ fn handle(
                             guard.state.clone(),
                             guard.topology.clone(),
                             guard.views.clone(),
-                            guard.status.clone(),
                         ))
                     }
                 };
@@ -364,25 +354,6 @@ fn schedule_compaction(config: Config, shared: Arc<Mutex<Shared>>, retain_keys: 
     });
 }
 
-fn schedule_refresh(shared: Arc<Mutex<Shared>>, server: Option<PathBuf>) {
-    let pending = match shared.lock() {
-        Ok(guard) => Arc::clone(&guard.refresh_pending),
-        Err(_) => return,
-    };
-    if pending.swap(true, Ordering::AcqRel) {
-        return;
-    }
-    thread::spawn(move || {
-        thread::sleep(Duration::from_millis(20));
-        let mut command = std::process::Command::new("tmux");
-        if let Some(server) = server {
-            command.arg("-S").arg(server);
-        }
-        let _ = command.args(["refresh-client", "-S"]).output();
-        pending.store(false, Ordering::Release);
-    });
-}
-
 fn attach_monitor(config: &Config, shared: &Arc<Mutex<Shared>>, server: Option<PathBuf>) {
     let Some(server) = server else {
         return;
@@ -417,7 +388,6 @@ fn attach_monitor(config: &Config, shared: &Arc<Mutex<Shared>>, server: Option<P
                 &guard.state,
                 &guard.topology,
             );
-            guard.status = crate::render::status(&config_for_monitor, &guard.views);
             guard.revision += 1;
         }
     });
@@ -488,26 +458,7 @@ pub fn subscribe(config: &Config) -> Result<mpsc::Receiver<Vec<SessionView>>, St
     Ok(receiver)
 }
 
-pub fn cached_status(config: &Config) -> Result<String, String> {
-    let mut stream = UnixStream::connect(socket_path(config)).map_err(|error| error.to_string())?;
-    serde_json::to_writer(&mut stream, &Request::Status).map_err(|error| error.to_string())?;
-    stream.write_all(b"\n").map_err(|error| error.to_string())?;
-    stream
-        .shutdown(std::net::Shutdown::Write)
-        .map_err(|error| error.to_string())?;
-    let mut line = String::new();
-    BufReader::new(stream)
-        .read_line(&mut line)
-        .map_err(|error| error.to_string())?;
-    let response: Response = serde_json::from_str(&line).map_err(|error| error.to_string())?;
-    response
-        .status
-        .ok_or_else(|| "daemon did not return cached status".to_owned())
-}
-
-pub fn health(
-    config: &Config,
-) -> Result<(u64, crate::tmux::Topology, Vec<SessionView>, String), String> {
+pub fn health(config: &Config) -> Result<(u64, crate::tmux::Topology, Vec<SessionView>), String> {
     let mut stream = UnixStream::connect(socket_path(config)).map_err(|error| error.to_string())?;
     serde_json::to_writer(&mut stream, &Request::Health).map_err(|error| error.to_string())?;
     stream.write_all(b"\n").map_err(|error| error.to_string())?;
@@ -526,12 +477,11 @@ pub fn health(
         response.revision,
         topology,
         response.views.unwrap_or_default(),
-        response.status.unwrap_or_default(),
     ))
 }
 
 pub fn cached_views(config: &Config) -> Result<Vec<SessionView>, String> {
-    health(config).map(|(_, _, views, _)| views)
+    health(config).map(|(_, _, views)| views)
 }
 
 fn context_for_pane(
@@ -566,12 +516,10 @@ mod tests {
             state: State::initial(),
             topology: crate::tmux::Topology::default(),
             views: Vec::new(),
-            status: String::new(),
             shutdown: false,
             monitor_server: None,
             monitor_stop: None,
             maintenance_active: Arc::new(AtomicBool::new(false)),
-            refresh_pending: Arc::new(AtomicBool::new(false)),
         }))
     }
 
@@ -581,6 +529,8 @@ mod tests {
             stale_seconds: 86_400,
             events_per_session: 200,
             events_compact_bytes: 8 * 1024 * 1024,
+            lock_timeout_seconds: 30,
+            rejected_overrides: Vec::new(),
             hide_subagents: true,
             use_color: false,
         }
@@ -641,6 +591,8 @@ mod tests {
             stale_seconds: 86_400,
             events_per_session: 200,
             events_compact_bytes: 8 * 1024 * 1024,
+            lock_timeout_seconds: 30,
+            rejected_overrides: Vec::new(),
             hide_subagents: true,
             use_color: false,
         };

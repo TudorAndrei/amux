@@ -1,4 +1,3 @@
-use crate::config::Config;
 use crate::model::{Record, SessionView};
 
 pub fn list(records: &[Record]) -> String {
@@ -7,12 +6,12 @@ pub fn list(records: &[Record]) -> String {
         .map(|record| {
             format!(
                 "{}\t{}\t{}\t{}\t{}\t{}",
-                record.agent,
-                record.status,
-                dash(&record.tmux_session),
-                dash(&record.tmux_pane),
-                dash(&record.reason),
-                dash(&record.cwd)
+                sanitize(&record.agent),
+                sanitize(&record.status),
+                dash(&sanitize(&record.tmux_session)),
+                dash(&sanitize(&record.tmux_pane)),
+                dash(&sanitize(&record.reason)),
+                dash(&sanitize(&record.cwd))
             )
         })
         .collect::<Vec<_>>()
@@ -25,11 +24,11 @@ pub fn sessions(sessions: &[SessionView]) -> String {
         .map(|session| {
             format!(
                 "{}\t{}\t{}\t{}\t{}",
-                session.status,
-                session.session,
-                dash(&session.pane),
-                dash(&session.reason),
-                dash(&session.cwd)
+                sanitize(&session.status),
+                sanitize(&session.session),
+                dash(&sanitize(&session.pane)),
+                dash(&sanitize(&session.reason)),
+                dash(&sanitize(&session.cwd))
             )
         })
         .collect::<Vec<_>>()
@@ -40,54 +39,15 @@ fn dash(value: &str) -> &str {
     if value.is_empty() { "-" } else { value }
 }
 
-pub fn status(config: &Config, sessions: &[SessionView]) -> String {
-    let agents: Vec<_> = sessions
-        .iter()
-        .flat_map(|session| &session.agents)
-        .collect();
-    let (kind, count, icon, style) = if agents
-        .iter()
-        .filter(|agent| agent.status == "attention")
-        .count()
-        > 0
-    {
-        let count = agents
-            .iter()
-            .filter(|agent| agent.status == "attention")
-            .count();
-        ("attention", count, "▲", "fg=red,bold")
-    } else if agents
-        .iter()
-        .filter(|agent| agent.status == "running")
-        .count()
-        > 0
-    {
-        let count = agents
-            .iter()
-            .filter(|agent| agent.status == "running")
-            .count();
-        ("running", count, "◐", "fg=yellow")
-    } else if agents.iter().filter(|agent| agent.status == "done").count() > 0 {
-        let count = agents.iter().filter(|agent| agent.status == "done").count();
-        ("done", count, "●", "fg=green")
-    } else if agents
-        .iter()
-        .filter(|agent| agent.status == "offline")
-        .count()
-        > 0
-    {
-        let count = agents
-            .iter()
-            .filter(|agent| agent.status == "offline")
-            .count();
-        ("offline", count, "○", "fg=colour244")
-    } else {
-        return String::new();
-    };
-    let _ = kind;
-    if config.use_color {
-        format!("#[{style}]{icon}#[default] {count}")
-    } else {
-        format!("{icon} {count}")
-    }
+/// Make terminal control characters visible rather than letting input alter the terminal.
+pub fn sanitize(value: &str) -> String {
+    value
+        .chars()
+        .flat_map(|c| match c {
+            '\x00'..='\x1f' => vec!['^', char::from_u32(c as u32 + 64).unwrap()],
+            '\x7f' => vec!['^', '?'],
+            '\u{80}'..='\u{9f}' => format!("^[[{}]", c as u32).chars().collect(),
+            _ => vec![c],
+        })
+        .collect()
 }

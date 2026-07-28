@@ -661,16 +661,6 @@ fn tmux_sessions_aggregate_agents_and_choose_the_highest_priority_pane() {
             .iter()
             .any(|agent| agent["agent"] == "codex" && agent["status"] == "running")
     );
-    assert_eq!(
-        amux(&state)
-            .env("PATH", &path)
-            .env("AMUX_COLOR", "0")
-            .arg("status")
-            .output()
-            .unwrap()
-            .stdout,
-        b"\xe2\x96\xb2 1"
-    );
     fs::remove_dir_all(state).unwrap();
     fs::remove_dir_all(fake_bin).unwrap();
 }
@@ -749,12 +739,6 @@ fn lazy_daemon_persists_events_and_serves_revisions() {
     let cleared: Value = serde_json::from_str(&cleared).unwrap();
     assert_eq!(cleared["revision"], 3);
     assert!(cleared["state"]["records"].as_object().unwrap().is_empty());
-    assert!(
-        daemon_request(&state, r#"{"kind":"status"}"#)["status"]
-            .as_str()
-            .unwrap()
-            .is_empty()
-    );
     let listed: Value = serde_json::from_slice(
         &amux(&state)
             .args(["list", "--json"])
@@ -929,12 +913,6 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
                     && record["tmux_session"] == "monitor"
                     && record["tmux_pane"] == pane.trim()
             })
-    );
-    let cached_status = daemon_request(&state, r#"{"kind":"status"}"#);
-    assert!(
-        cached_status["status"]
-            .as_str()
-            .is_some_and(|status| !status.is_empty())
     );
     let agent_commands = temp_dir("monitor-agents");
     let agent_source = agent_commands.join("agent.rs");
@@ -1206,14 +1184,10 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
 
 #[test]
 #[cfg(unix)]
-fn tmux_plugin_loads_native_picker_and_status_commands() {
+fn tmux_plugin_loads_native_picker_without_status_wiring() {
     let _lock = real_server_test_lock();
     let tmux_tmpdir = tmux_temp_dir("plugin");
-    let socket_name = format!(
-        "amux-plugin-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    );
+    let socket_name = format!("amux-plugin-{}", std::process::id());
     assert!(
         tmux_command(&tmux_tmpdir)
             .args(["-L", &socket_name, "new-session", "-d", "-s", "plugin"])
@@ -1222,42 +1196,15 @@ fn tmux_plugin_loads_native_picker_and_status_commands() {
             .success()
     );
     let plugin = Path::new(env!("CARGO_MANIFEST_DIR")).join("amux.tmux");
-    let legacy_status = plugin.parent().unwrap().join("scripts/status.sh");
-    assert!(
-        tmux_command(&tmux_tmpdir)
-            .args(["-L", &socket_name, "set-option", "-g", "@amux-status", "on"])
-            .status()
-            .unwrap()
-            .success()
-    );
-    assert!(
-        tmux_command(&tmux_tmpdir)
-            .args([
-                "-L",
-                &socket_name,
-                "set-option",
-                "-g",
-                "@amux-status-command",
-                legacy_status.to_str().unwrap(),
-            ])
-            .status()
-            .unwrap()
-            .success()
-    );
-    assert!(
-        tmux_command(&tmux_tmpdir)
-            .args([
-                "-L",
-                &socket_name,
-                "set-option",
-                "-g",
-                "status-right",
-                &format!("#({}) host", legacy_status.display()),
-            ])
-            .status()
-            .unwrap()
-            .success()
-    );
+    let _ = tmux_command(&tmux_tmpdir)
+        .args([
+            "-L",
+            &socket_name,
+            "set-option",
+            "-gu",
+            "@amux-status-command",
+        ])
+        .status();
     assert!(
         tmux_command(&tmux_tmpdir)
             .args(["-L", &socket_name, "run-shell", plugin.to_str().unwrap()])
@@ -1265,57 +1212,26 @@ fn tmux_plugin_loads_native_picker_and_status_commands() {
             .unwrap()
             .success()
     );
-    let mut picker = String::new();
-    for _ in 0..20 {
-        picker = String::from_utf8(
-            tmux_command(&tmux_tmpdir)
-                .args(["-L", &socket_name, "list-keys", "-T", "prefix"])
-                .output()
-                .unwrap()
-                .stdout,
-        )
+    let picker = String::from_utf8(
+        tmux_command(&tmux_tmpdir)
+            .args(["-L", &socket_name, "list-keys", "-T", "prefix"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    assert!(picker.contains("bin/amux picker"));
+    let status_option = tmux_command(&tmux_tmpdir)
+        .args([
+            "-L",
+            &socket_name,
+            "show-option",
+            "-gqv",
+            "@amux-status-command",
+        ])
+        .output()
         .unwrap();
-        if picker.contains("bin/amux picker") {
-            break;
-        }
-        thread::sleep(Duration::from_millis(25));
-    }
-    assert!(
-        picker.contains("bin/amux picker"),
-        "unexpected picker binding: {picker}"
-    );
-    // tmux passes `-e` values through verbatim, so a client format there would
-    // reach the picker as the literal string and every switch would fail.
-    assert!(
-        !picker.contains("AMUX_TMUX_CLIENT"),
-        "picker binding must not pass an unexpanded client format: {picker}"
-    );
-    let status_command = String::from_utf8(
-        tmux_command(&tmux_tmpdir)
-            .args([
-                "-L",
-                &socket_name,
-                "show-option",
-                "-gqv",
-                "@amux-status-command",
-            ])
-            .output()
-            .unwrap()
-            .stdout,
-    )
-    .unwrap();
-    assert!(status_command.contains("bin/amux status"));
-    let status_right = String::from_utf8(
-        tmux_command(&tmux_tmpdir)
-            .args(["-L", &socket_name, "show-option", "-gqv", "status-right"])
-            .output()
-            .unwrap()
-            .stdout,
-    )
-    .unwrap();
-    assert!(status_right.contains("bin/amux status"));
-    assert!(!status_right.contains("scripts/status.sh"));
-    assert!(status_right.contains("host"));
+    assert!(!String::from_utf8_lossy(&status_option.stdout).contains("bin/amux status"));
     let _ = tmux_command(&tmux_tmpdir)
         .args(["-L", &socket_name, "kill-server"])
         .status();

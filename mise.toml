@@ -58,6 +58,7 @@ mise run shellcheck
 mise run fmt-check
 mise run clippy
 mise run rust-test
+mise run cog-check
 '''
 
 [tasks.cog-check]

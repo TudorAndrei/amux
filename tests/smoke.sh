@@ -46,7 +46,6 @@ printf '%s\n' "$state" | jq -e '[.records[].agent] | sort == ["claude","codex","
 "$ROOT/bin/amux" sessions --json | jq -e 'all(.session != "70309dc1-b9b2-4826-99d8-6d3ff79d2c83")' >/dev/null
 AMUX_HIDE_SUBAGENTS=0 "$ROOT/bin/amux" sessions --json | jq -e 'all(.session != "/tmp/amux-subagent-project")' >/dev/null
 AMUX_HIDE_SUBAGENTS=0 "$ROOT/bin/amux" sessions --json | jq -e 'all(.session != "70309dc1-b9b2-4826-99d8-6d3ff79d2c83")' >/dev/null
-test -z "$(AMUX_COLOR=0 "$ROOT/bin/amux" status)"
 
 cat >"$FAKE_BIN/tmux" <<'SH'
 #!/usr/bin/env bash
@@ -197,7 +196,6 @@ unset TMUX
 
 sessions="$(AMUX_FAKE_MULTI=1 "$ROOT/bin/amux" sessions --json)"
 printf '%s\n' "$sessions" | jq -e '.[0].status == "done" and ([.[0].agents[].status] | all(. == "done"))' >/dev/null
-test "$(AMUX_FAKE_MULTI=1 AMUX_COLOR=0 "$ROOT/bin/amux" status)" = "● 2"
 picker_rows="$(AMUX_FAKE_MULTI=1 AMUX_COLOR=0 "$ROOT/bin/amux" picker --rows)"
 printf '%s\n' "$picker_rows" | awk -F '\t' '
   $1 == "multi-agent" { session = 1 }

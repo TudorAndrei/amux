@@ -65,6 +65,8 @@ jobs:
       - uses: jdx/mise-action@v4
       - name: Install Cargo version editor
         run: cargo install cargo-edit --locked
+      - name: Check conventional commits
+        run: cog check --from-latest-tag
       - id: release
         uses: cocogitto/cocogitto-action@v4.2.0
         with:

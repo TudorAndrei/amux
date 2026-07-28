@@ -266,6 +266,8 @@ mod tests {
             stale_seconds: 86_400,
             events_per_session: 200,
             events_compact_bytes: 8 * 1024 * 1024,
+            lock_timeout_seconds: 30,
+            rejected_overrides: Vec::new(),
             hide_subagents: true,
             use_color: false,
         };
@@ -321,6 +323,8 @@ mod tests {
             stale_seconds: 86_400,
             events_per_session: 200,
             events_compact_bytes: 8 * 1024 * 1024,
+            lock_timeout_seconds: 30,
+            rejected_overrides: Vec::new(),
             hide_subagents: true,
             use_color: false,
         };

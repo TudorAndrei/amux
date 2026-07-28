@@ -7,6 +7,8 @@ pub struct Config {
     pub stale_seconds: i64,
     pub events_per_session: usize,
     pub events_compact_bytes: u64,
+    pub lock_timeout_seconds: u64,
+    pub rejected_overrides: Vec<String>,
     pub hide_subagents: bool,
     pub use_color: bool,
 }
@@ -23,18 +25,36 @@ impl Config {
                             .join(".local/state/amux")
                     })
             });
-        let stale_seconds = env::var("AMUX_STALE_SECONDS")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(86_400);
+        let mut rejected_overrides = Vec::new();
+        let stale_seconds = match env::var("AMUX_STALE_SECONDS") {
+            Ok(value) => match value.parse::<i64>() {
+                Ok(value) if value > 0 => value,
+                _ => {
+                    rejected_overrides.push("AMUX_STALE_SECONDS".to_owned());
+                    86_400
+                }
+            },
+            Err(_) => 86_400,
+        };
         let events_per_session = env::var("AMUX_EVENTS_PER_SESSION")
             .ok()
             .and_then(|value| value.parse().ok())
             .unwrap_or(200);
-        let events_compact_bytes = env::var("AMUX_EVENTS_COMPACT_BYTES")
+        let events_compact_bytes = match env::var("AMUX_EVENTS_COMPACT_BYTES") {
+            Ok(value) => match value.parse::<u64>() {
+                Ok(value) if value > 0 => value,
+                _ => {
+                    rejected_overrides.push("AMUX_EVENTS_COMPACT_BYTES".to_owned());
+                    8 * 1024 * 1024
+                }
+            },
+            Err(_) => 8 * 1024 * 1024,
+        };
+        let lock_timeout_seconds = env::var("AMUX_LOCK_TIMEOUT_SECONDS")
             .ok()
             .and_then(|value| value.parse().ok())
-            .unwrap_or(8 * 1024 * 1024);
+            .filter(|value: &u64| *value > 0)
+            .unwrap_or(30);
         let hide_subagents = !matches!(
             env::var("AMUX_HIDE_SUBAGENTS").as_deref(),
             Ok("0" | "false" | "FALSE" | "no" | "NO" | "off" | "OFF")
@@ -47,6 +67,8 @@ impl Config {
             stale_seconds,
             events_per_session,
             events_compact_bytes,
+            lock_timeout_seconds,
+            rejected_overrides,
             hide_subagents,
             use_color,
         }
