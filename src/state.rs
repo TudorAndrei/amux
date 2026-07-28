@@ -207,10 +207,29 @@ fn retained_events(
     source: &std::path::Path,
 ) -> Result<Vec<String>, String> {
     let input = File::open(source).map_err(|error| error.to_string())?;
+    let mut input = BufReader::new(input);
     let mut per_key: BTreeMap<String, VecDeque<(usize, String)>> = BTreeMap::new();
-    for (ordinal, line) in BufReader::new(input).lines().enumerate() {
-        let line = line.map_err(|error| error.to_string())?;
-        let Ok(value) = serde_json::from_str::<Value>(&line) else {
+    let mut ordinal = 0;
+    loop {
+        let mut bytes = Vec::new();
+        let count = input
+            .read_until(b'\n', &mut bytes)
+            .map_err(|error| error.to_string())?;
+        if count == 0 {
+            break;
+        }
+        if bytes.last() == Some(&b'\n') {
+            bytes.pop();
+        }
+        if bytes.last() == Some(&b'\r') {
+            bytes.pop();
+        }
+        let current_ordinal = ordinal;
+        ordinal += 1;
+        let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
+            continue;
+        };
+        let Ok(line) = String::from_utf8(bytes) else {
             continue;
         };
         let Some(key) = value.get("key").and_then(Value::as_str) else {
@@ -220,7 +239,7 @@ fn retained_events(
             continue;
         }
         let entries = per_key.entry(key.to_owned()).or_default();
-        entries.push_back((ordinal, line));
+        entries.push_back((current_ordinal, line));
         if entries.len() > config.events_per_session {
             entries.pop_front();
         }
@@ -331,6 +350,12 @@ mod tests {
         }
         let contents = lines.join("\n");
         fs::write(config.events_file(), format!("{contents}\n")).unwrap();
+        OpenOptions::new()
+            .append(true)
+            .open(config.events_file())
+            .unwrap()
+            .write_all(&[0xff, b'\n'])
+            .unwrap();
         let keys = BTreeSet::from([a.to_owned(), b.to_owned()]);
         compact_events(&config, &keys).unwrap();
         let events: Vec<Value> = fs::read_to_string(config.events_file())
