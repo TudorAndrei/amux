@@ -27,7 +27,11 @@ pub fn ensure_private_dir(config: &Config) -> Result<(), String> {
     // that migration artifact; advisory locking needs this stable file path.
     let lock_path = config.lock_file();
     if lock_path.is_dir() {
-        fs::remove_dir_all(&lock_path).map_err(|error| error.to_string())?;
+        match fs::remove_dir_all(&lock_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.to_string()),
+        }
     }
     fs::set_permissions(&config.state_dir, fs::Permissions::from_mode(0o700))
         .map_err(|error| error.to_string())
@@ -43,7 +47,8 @@ fn restrict_file(path: &std::path::Path) -> Result<(), String> {
 
 /// The guard owns the fresh file description whose advisory lock we acquired.
 /// Never share, clone, or cache this File: re-locking one handle succeeds
-/// silently and does not exclude other work in this process.
+/// silently and does not exclude other work in this process. Dropping this
+/// file deliberately releases the advisory lock; there is no lock-file cleanup.
 #[derive(Debug)]
 struct Lock {
     _file: Option<File>,
@@ -522,6 +527,46 @@ mod tests {
         )
         .unwrap();
         assert!(load(&config).unwrap().records.contains_key("one"));
+        fs::remove_dir_all(config.state_dir).unwrap();
+    }
+
+    #[test]
+    fn child_holds_lock_for_cross_process_release_test() {
+        let Some(state_dir) = std::env::var_os("AMUX_TEST_LOCK_HOLDER_DIR") else {
+            return;
+        };
+        let mut config = config(200);
+        config.state_dir = state_dir.into();
+        let _lock = acquire(&config).unwrap();
+        fs::write(config.state_dir.join("lock-held"), "ready").unwrap();
+        thread::sleep(Duration::from_millis(250));
+    }
+
+    #[test]
+    fn cross_process_release_makes_the_lock_immediately_acquirable() {
+        let mut config = config(200);
+        config.lock_acquire_timeout_ms = 50;
+        ensure_private_dir(&config).unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "state::tests::child_holds_lock_for_cross_process_release_test",
+            ])
+            .env("AMUX_TEST_LOCK_HOLDER_DIR", &config.state_dir)
+            .spawn()
+            .unwrap();
+        let ready = config.state_dir.join("lock-held");
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !ready.exists() && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(ready.exists(), "child did not acquire the lock");
+        assert_eq!(
+            acquire(&config).unwrap_err(),
+            "timed out waiting for state lock"
+        );
+        assert!(child.wait().unwrap().success());
+        acquire(&config).expect("lock must be released when the child exits");
         fs::remove_dir_all(config.state_dir).unwrap();
     }
 

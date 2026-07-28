@@ -447,7 +447,22 @@ fn write_text(path: &Path, text: &str, name: &str, mode: Mode) -> Result<(), Str
     // Rename replaces a symlink itself, so resolve it first and atomically
     // replace its target instead. This keeps dotfiles-managed links intact.
     let destination = if path.is_symlink() {
-        path.canonicalize().map_err(|error| error.to_string())?
+        match path.canonicalize() {
+            Ok(destination) => destination,
+            // A broken dotfiles link still names the target we should replace.
+            // Resolve its immediate relative target without replacing the link.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let target = fs::read_link(path).map_err(|error| error.to_string())?;
+                if target.is_absolute() {
+                    target
+                } else {
+                    path.parent()
+                        .ok_or_else(|| "configuration path has no parent".to_owned())?
+                        .join(target)
+                }
+            }
+            Err(error) => return Err(error.to_string()),
+        }
     } else {
         path.to_path_buf()
     };
@@ -642,6 +657,18 @@ mod tests {
             fs::metadata(&target).unwrap().permissions().mode() & 0o777,
             0o664
         );
+        fs::remove_dir_all(paths.home).unwrap();
+    }
+
+    #[test]
+    fn atomic_write_keeps_a_broken_symlink() {
+        let paths = paths();
+        let target = paths.home.join("created-by-link.json");
+        let link = paths.home.join("settings.json");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        write_text(&link, "new", "test", Mode::Write).unwrap();
+        assert!(link.is_symlink());
+        assert_eq!(fs::read_to_string(target).unwrap(), "new");
         fs::remove_dir_all(paths.home).unwrap();
     }
 

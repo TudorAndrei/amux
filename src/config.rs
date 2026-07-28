@@ -58,7 +58,10 @@ impl Config {
             },
             Err(_) => 8 * 1024 * 1024,
         };
-        let locking_enabled = env::var("AMUX_LOCK").as_deref() != Ok("0");
+        let locking_enabled = !matches!(
+            env::var("AMUX_LOCK").as_deref(),
+            Ok("0" | "false" | "FALSE" | "no" | "NO" | "off" | "OFF")
+        );
         let hide_subagents = !matches!(
             env::var("AMUX_HIDE_SUBAGENTS").as_deref(),
             Ok("0" | "false" | "FALSE" | "no" | "NO" | "off" | "OFF")
@@ -71,7 +74,9 @@ impl Config {
             stale_seconds,
             events_per_session,
             events_compact_bytes,
-            lock_acquire_timeout_ms: 5_000,
+            // Hook integrations kill commands after five seconds; leave room
+            // for startup and reporting so contention fails diagnostically.
+            lock_acquire_timeout_ms: 3_000,
             locking_enabled,
             rejected_overrides,
             hide_subagents,

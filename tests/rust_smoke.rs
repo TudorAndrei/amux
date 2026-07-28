@@ -67,10 +67,29 @@ fn amux(state: &Path) -> Command {
 }
 
 #[cfg(unix)]
+fn connect_daemon(socket: &Path) -> UnixStream {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match UnixStream::connect(socket) {
+            Ok(stream) => return stream,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                ) && Instant::now() < deadline =>
+            {
+                thread::sleep(Duration::from_millis(25));
+            }
+            Err(error) => panic!("cannot connect to daemon {}: {error}", socket.display()),
+        }
+    }
+}
+
+#[cfg(unix)]
 fn daemon_request(state: &Path, request: &str) -> Value {
     use std::io::{BufRead, BufReader, Write};
     let socket = state.join("amux.sock");
-    let mut stream = UnixStream::connect(socket).unwrap();
+    let mut stream = connect_daemon(&socket);
     stream.write_all(request.as_bytes()).unwrap();
     stream.write_all(b"\n").unwrap();
     stream.shutdown(std::net::Shutdown::Write).unwrap();
@@ -247,6 +266,17 @@ fn cli_clear_doctor_and_option_contracts_are_preserved() {
         String::from_utf8(valid_doctor.stdout)
             .unwrap()
             .contains("events per session: 17")
+    );
+    let lock_doctor = amux(&state)
+        .env("PATH", &path)
+        .env("AMUX_LOCK", "off")
+        .arg("doctor")
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8(lock_doctor.stdout)
+            .unwrap()
+            .contains("locking: disabled (AMUX_LOCK=0)")
     );
     assert!(amux(&state).arg("clear").status().unwrap().success());
     assert!(!state.join("state.json").exists());
@@ -882,13 +912,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
         .stdout(Stdio::null())
         .stderr(Stdio::from(fs::File::create(&daemon_log).unwrap()));
     let mut daemon = daemon.spawn().unwrap();
-    for _ in 0..40 {
-        if state.join("amux.sock").exists() {
-            break;
-        }
-        thread::sleep(Duration::from_millis(25));
-    }
-    let mut subscription = UnixStream::connect(state.join("amux.sock")).unwrap();
+    let mut subscription = connect_daemon(&state.join("amux.sock"));
     subscription.write_all(br#"{"kind":"subscribe"}"#).unwrap();
     subscription.write_all(b"\n").unwrap();
     let subscription = monitor_updates(subscription, daemon_log);
