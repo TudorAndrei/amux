@@ -2,6 +2,18 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.3.0](https://github.com/TudorAndrei/amux/compare/d60f14d0c7dc3635b27972415edfdff3af4456e5..v0.3.0) - 2026-07-28
+#### Features
+- ![BREAKING](https://img.shields.io/badge/BREAKING-red) remove status integration and clear deferred backlog - ([d60f14d](https://github.com/TudorAndrei/amux/commit/d60f14d0c7dc3635b27972415edfdff3af4456e5)) - TudorAndrei
+#### Bug Fixes
+- preserve successor lock leases - ([402eac7](https://github.com/TudorAndrei/amux/commit/402eac74755e615688f3cd27a54798a0d9104850)) - TudorAndrei
+- restore picker bindings and lock lease heartbeats - ([51d8367](https://github.com/TudorAndrei/amux/commit/51d83671749a317d1e90978afe428ddaffdb9a88)) - TudorAndrei
+#### Tests
+- cover deferred-work failure paths - ([ff84e9f](https://github.com/TudorAndrei/amux/commit/ff84e9fc6067388377dfb57c7f5dcedd576b0897)) - TudorAndrei
+- record deferred-work regression coverage - ([47a1589](https://github.com/TudorAndrei/amux/commit/47a15897fb9d630a48347aa882a35471db4d1c04)) - TudorAndrei
+
+- - -
+
 ## [v0.2.5](https://github.com/TudorAndrei/amux/compare/f6ea6ed88e4465989a9cd97d229b5c5f0163e032..v0.2.5) - 2026-07-28
 #### Bug Fixes
 - (**codex**) bound hook events and restore liveness - ([f6ea6ed](https://github.com/TudorAndrei/amux/commit/f6ea6ed88e4465989a9cd97d229b5c5f0163e032)) - TudorAndrei
