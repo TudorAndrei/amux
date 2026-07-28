@@ -183,7 +183,10 @@ esac
 
 fn tmux_command(socket_dir: &Path) -> Command {
     let mut command = Command::new("tmux");
-    command.env("TMUX_TMPDIR", socket_dir);
+    // Isolate tests from a developer's tmux.conf and installed TPM plugins.
+    command
+        .env("TMUX_TMPDIR", socket_dir)
+        .args(["-f", "/dev/null"]);
     command
 }
 
@@ -1196,6 +1199,20 @@ fn tmux_plugin_loads_native_picker_without_status_wiring() {
             .success()
     );
     let plugin = Path::new(env!("CARGO_MANIFEST_DIR")).join("amux.tmux");
+    assert!(
+        tmux_command(&tmux_tmpdir)
+            .args([
+                "-L",
+                &socket_name,
+                "set-option",
+                "-g",
+                "@amux-next-attention-key",
+                "N"
+            ])
+            .status()
+            .unwrap()
+            .success()
+    );
     let _ = tmux_command(&tmux_tmpdir)
         .args([
             "-L",
@@ -1221,6 +1238,7 @@ fn tmux_plugin_loads_native_picker_without_status_wiring() {
     )
     .unwrap();
     assert!(picker.contains("bin/amux picker"));
+    assert!(picker.contains("bin/amux next-attention"));
     let status_option = tmux_command(&tmux_tmpdir)
         .args([
             "-L",

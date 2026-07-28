@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, SystemTime};
 
@@ -38,20 +39,18 @@ fn acquire(config: &Config) -> Result<(), String> {
     ensure_private_dir(config)?;
     for _ in 0..500 {
         match fs::create_dir(config.lock_dir()) {
-            Ok(()) => {
-                // A fresh mtime is the portable ownership heartbeat used for stale takeover.
-                let _ = fs::File::open(config.lock_dir()).and_then(|file| file.sync_all());
-                return Ok(());
-            }
+            Ok(()) => return Ok(()),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                let stale = fs::metadata(config.lock_dir())
+                let heartbeat = config.lock_dir().join("heartbeat");
+                let stale = fs::metadata(&heartbeat)
+                    .or_else(|_| fs::metadata(config.lock_dir()))
                     .ok()
                     .and_then(|meta| meta.modified().ok())
                     .and_then(|modified| SystemTime::now().duration_since(modified).ok())
                     .is_some_and(|age| age > Duration::from_secs(config.lock_timeout_seconds));
                 if stale {
                     // Removing may race another contender; the following create retries safely.
-                    let _ = fs::remove_dir(config.lock_dir());
+                    let _ = fs::remove_dir_all(config.lock_dir());
                 }
                 thread::sleep(Duration::from_millis(10))
             }
@@ -61,10 +60,52 @@ fn acquire(config: &Config) -> Result<(), String> {
     Err("timed out waiting for state lock".to_owned())
 }
 
-struct Lock<'a>(&'a Config);
+struct Lock<'a> {
+    config: &'a Config,
+    stop: Option<mpsc::Sender<()>>,
+    heartbeat: Option<thread::JoinHandle<()>>,
+}
+
+impl<'a> Lock<'a> {
+    fn new(config: &'a Config) -> Self {
+        let marker = config.lock_dir().join("heartbeat");
+        let token = format!("{}-{:?}", std::process::id(), SystemTime::now());
+        // The marker's mtime, not the directory creation time, is the lease.
+        // A previous owner verifies this token before it can refresh anything.
+        let _ = fs::write(&marker, &token);
+        let (stop, receiver) = mpsc::channel();
+        let interval = Duration::from_secs((config.lock_timeout_seconds / 2).clamp(1, 15));
+        let heartbeat = thread::spawn(move || {
+            loop {
+                if receiver.recv_timeout(interval).is_ok() {
+                    break;
+                }
+                if fs::read_to_string(&marker).ok().as_deref() != Some(&token) {
+                    break;
+                }
+                let _ = OpenOptions::new()
+                    .write(true)
+                    .open(&marker)
+                    .and_then(|file| {
+                        file.set_times(fs::FileTimes::new().set_modified(SystemTime::now()))
+                    });
+            }
+        });
+        Self {
+            config,
+            stop: Some(stop),
+            heartbeat: Some(heartbeat),
+        }
+    }
+}
+
 impl Drop for Lock<'_> {
     fn drop(&mut self) {
-        let _ = fs::remove_dir(self.0.lock_dir());
+        self.stop.take().map(|stop| stop.send(()));
+        if let Some(heartbeat) = self.heartbeat.take() {
+            let _ = heartbeat.join();
+        }
+        let _ = fs::remove_dir_all(self.config.lock_dir());
     }
 }
 
@@ -76,7 +117,7 @@ pub fn write_event(
     now: i64,
 ) -> Result<WriteEventResult, String> {
     acquire(config)?;
-    let _lock = Lock(config);
+    let _lock = Lock::new(config);
     restrict_file(&config.state_file())?;
     let mut state = load(config)?;
     let changed = state.records.get(&key).is_none_or(|previous| {
@@ -154,7 +195,7 @@ pub fn adopt_orphaned_log(config: &Config) -> Result<(), String> {
         return Ok(());
     }
     acquire(config)?;
-    let _lock = Lock(config);
+    let _lock = Lock::new(config);
     if !orphan.exists() {
         return Ok(());
     }
@@ -181,7 +222,7 @@ pub fn compact_events(config: &Config, retain_keys: &BTreeSet<String>) -> Result
     let compacting = config.compacting_events_file();
     acquire(config)?;
     {
-        let _lock = Lock(config);
+        let _lock = Lock::new(config);
         if compacting.exists() {
             return Err(format!(
                 "orphaned event log exists: {}",
@@ -199,7 +240,7 @@ pub fn compact_events(config: &Config, retain_keys: &BTreeSet<String>) -> Result
     write_lines(&retained_path, &retained)?;
 
     acquire(config)?;
-    let _lock = Lock(config);
+    let _lock = Lock::new(config);
     let temp = config
         .state_dir
         .join(format!("events.jsonl.compact.{}", std::process::id()));
@@ -305,7 +346,7 @@ fn sync_dir(path: &std::path::Path) -> Result<(), String> {
 
 pub fn clear(config: &Config) -> Result<(), String> {
     acquire(config)?;
-    let _lock = Lock(config);
+    let _lock = Lock::new(config);
     for path in [config.state_file(), config.events_file()] {
         if path.exists() {
             fs::remove_file(path).map_err(|error| error.to_string())?;
@@ -448,11 +489,32 @@ mod tests {
     }
 
     #[test]
+    fn lock_heartbeat_refreshes_a_long_hold() {
+        let mut config = config(200);
+        config.lock_timeout_seconds = 1;
+        acquire(&config).unwrap();
+        let _lock = Lock::new(&config);
+        let first = fs::metadata(config.lock_dir().join("heartbeat"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        thread::sleep(Duration::from_millis(1_100));
+        let refreshed = fs::metadata(config.lock_dir().join("heartbeat"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        assert!(refreshed > first);
+        drop(_lock);
+        fs::remove_dir_all(config.state_dir).unwrap();
+    }
+
+    #[test]
     fn stale_lock_is_taken_over_before_writing() {
         let mut config = config(200);
         config.lock_timeout_seconds = 0;
         ensure_private_dir(&config).unwrap();
         fs::create_dir(config.lock_dir()).unwrap();
+        fs::write(config.lock_dir().join("heartbeat"), "abandoned").unwrap();
         thread::sleep(Duration::from_millis(2));
         write_event(
             &config,

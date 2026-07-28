@@ -234,7 +234,7 @@ fn uninstall_at(paths: &Paths, mode: Mode) -> Result<(), String> {
 }
 
 fn shell_quote(path: &Path) -> String {
-    format!("'{}'", path.to_string_lossy().replace('\'', "'\\\"'\\\"'"))
+    format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
 }
 
 fn template_json(template: &Path, launcher: &Path) -> Result<Value, String> {
@@ -525,7 +525,7 @@ mod tests {
 
     #[test]
     fn templates_quote_paths_with_spaces_quotes_and_backslashes() {
-        let launcher = PathBuf::from("/tmp/amux path/\\\"quoted\\\\bin/amux");
+        let launcher = PathBuf::from("/tmp/amux path/it'\\\"quoted\\\\bin/amux");
         let rendered = template_json(
             &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("hooks/codex/hooks.json"),
             &launcher,
@@ -537,6 +537,18 @@ mod tests {
         assert!(command.starts_with("'/tmp/amux path/"));
         assert!(is_amux_command(command));
         assert!(serde_json::to_string(&rendered).is_ok());
+        let output = std::process::Command::new("sh")
+            .args([
+                "-c",
+                &format!("set -- {}; printf '%s' \"$1\"", shell_quote(&launcher)),
+            ])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            launcher.to_string_lossy()
+        );
     }
 
     #[test]

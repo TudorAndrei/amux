@@ -584,6 +584,42 @@ mod tests {
     }
 
     #[test]
+    fn oversized_request_is_rejected_without_poisoning_shared_state() {
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let shared = shared();
+        let worker_shared = Arc::clone(&shared);
+        let config = subscriber_config();
+        let worker = thread::spawn(move || handle(server, &config, worker_shared));
+        client
+            .write_all(&vec![b'x'; MAX_REQUEST_BYTES as usize])
+            .unwrap();
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut response = String::new();
+        BufReader::new(client).read_line(&mut response).unwrap();
+        assert!(
+            serde_json::from_str::<Response>(&response)
+                .unwrap()
+                .error
+                .is_some_and(|error| error.contains("exceeds 1 MiB"))
+        );
+        assert!(worker.join().unwrap().is_ok());
+
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let config = subscriber_config();
+        let worker = thread::spawn(move || handle(server, &config, shared));
+        client.write_all(b"{\"kind\":\"ping\"}\n").unwrap();
+        let mut response = String::new();
+        BufReader::new(client).read_line(&mut response).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Response>(&response)
+                .unwrap()
+                .revision,
+            0
+        );
+        assert!(worker.join().unwrap().is_ok());
+    }
+
+    #[test]
     fn subscription_exits_when_the_client_disconnects() {
         let (mut client, server) = UnixStream::pair().unwrap();
         let config = Config {
