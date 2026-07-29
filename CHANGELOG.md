@@ -2,6 +2,15 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.4.0](https://github.com/TudorAndrei/amux/compare/36ef9b87df327870f065b505bc8a00abfeccb7f4..v0.4.0) - 2026-07-29
+#### Features
+- ![BREAKING](https://img.shields.io/badge/BREAKING-red) replace state lock lease with advisory locking - ([36ef9b8](https://github.com/TudorAndrei/amux/commit/36ef9b87df327870f065b505bc8a00abfeccb7f4)) - TudorAndrei
+#### Bug Fixes
+- prove kernel lock release and sync hook backups - ([8e3d3a6](https://github.com/TudorAndrei/amux/commit/8e3d3a691a1ae1d735ac668aafabe590db6f7ab4)) - TudorAndrei
+- harden daemon and lock handoffs - ([340fce1](https://github.com/TudorAndrei/amux/commit/340fce12fada58d0e3a7af2ea21ef8717fedf4da)) - TudorAndrei
+
+- - -
+
 ## [v0.3.0](https://github.com/TudorAndrei/amux/compare/d60f14d0c7dc3635b27972415edfdff3af4456e5..v0.3.0) - 2026-07-28
 #### Features
 - ![BREAKING](https://img.shields.io/badge/BREAKING-red) remove status integration and clear deferred backlog - ([d60f14d](https://github.com/TudorAndrei/amux/commit/d60f14d0c7dc3635b27972415edfdff3af4456e5)) - TudorAndrei
