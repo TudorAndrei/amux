@@ -92,7 +92,7 @@ Contributors can build from source with Rust 1.96 or newer:
 
 ```bash
 mise run package
-mise run check
+hk check
 ```
 
 The tmux plugin deliberately never compiles Rust on demand. TPM downloads a
@@ -102,7 +102,7 @@ a matching binary.
 Releases use [Cocogitto](https://github.com/cocogitto/cocogitto): commits after
 the `v0.0.0` compatibility baseline must follow Conventional Commits, and the
 release workflow derives the next version, changelog, tag, and archives from
-that history. Run `mise run cog-check` to verify the local range.
+that history. Run `hk check` to verify the local range.
 
 `mise run package` writes a deployable archive under `dist/` for the current host
 target. GitHub Actions also builds archives for macOS arm64 and Linux
@@ -127,7 +127,7 @@ upgrade, run `bin/amux install-hooks --write` to install the current mappings.
 
 ```bash
 tests/smoke.sh
-mise run check
+hk check
 ```
 
 Measured native-runtime latency, tmux reconciliation behavior, and the
