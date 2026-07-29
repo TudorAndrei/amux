@@ -183,6 +183,11 @@ Reloading installs the picker binding without modifying `status-right`. The
 native runtime reuses the version-one state file and starts its daemon lazily
 on the next hook event or picker launch.
 
+Updating the plugin fetches the matching binary and retires the running daemon
+automatically, but hook files are never rewritten unasked: run `amux doctor`
+after an update and re-run `install-hooks --write` when it reports drift. See
+[docs/updating.md](docs/updating.md).
+
 Load the plugin directly for local development:
 
 ```tmux
