@@ -211,7 +211,7 @@ fn cmd_doctor(config: &Config) -> i32 {
         if config.locking_enabled {
             "enabled"
         } else {
-            "disabled (AMUX_LOCK=0)"
+            "disabled"
         }
     );
     println!("events per session: {}", config.events_per_session);

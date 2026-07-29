@@ -74,9 +74,10 @@ impl Config {
             stale_seconds,
             events_per_session,
             events_compact_bytes,
-            // Hook integrations kill commands after five seconds; leave room
-            // for startup and reporting so contention fails diagnostically.
-            lock_acquire_timeout_ms: 3_000,
+            // Hook integrations kill commands after five seconds; reserve at
+            // least two seconds for startup and reporting so contention fails
+            // diagnostically rather than being terminated by the integration.
+            lock_acquire_timeout_ms: 2_000,
             locking_enabled,
             rejected_overrides,
             hide_subagents,

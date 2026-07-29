@@ -1,7 +1,7 @@
 use crate::fsutil::sync_dir;
 use serde_json::{Map, Value};
 use std::env;
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -514,7 +514,14 @@ fn backup(path: &Path) -> Result<(), String> {
             .unwrap_or_default()
             .as_secs();
         let backup = PathBuf::from(format!("{}.amux.bak.{timestamp}", path.display()));
-        fs::copy(path, backup).map_err(|error| error.to_string())?;
+        fs::copy(path, &backup).map_err(|error| error.to_string())?;
+        File::open(&backup)
+            .and_then(|file| file.sync_all())
+            .map_err(|error| error.to_string())?;
+        let parent = path
+            .parent()
+            .ok_or_else(|| "configuration path has no parent".to_owned())?;
+        sync_dir(parent)?;
     }
     Ok(())
 }
@@ -666,6 +673,19 @@ mod tests {
         let target = paths.home.join("created-by-link.json");
         let link = paths.home.join("settings.json");
         std::os::unix::fs::symlink(&target, &link).unwrap();
+        write_text(&link, "new", "test", Mode::Write).unwrap();
+        assert!(link.is_symlink());
+        assert_eq!(fs::read_to_string(target).unwrap(), "new");
+        fs::remove_dir_all(paths.home).unwrap();
+    }
+
+    #[test]
+    fn atomic_write_resolves_a_broken_symlink_with_parent_components() {
+        let paths = paths();
+        let link = paths.home.join("config/nested/settings.json");
+        fs::create_dir_all(link.parent().unwrap()).unwrap();
+        let target = paths.home.join("created-by-link.json");
+        std::os::unix::fs::symlink("../../created-by-link.json", &link).unwrap();
         write_text(&link, "new", "test", Mode::Write).unwrap();
         assert!(link.is_symlink());
         assert_eq!(fs::read_to_string(target).unwrap(), "new");

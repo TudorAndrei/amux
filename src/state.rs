@@ -539,11 +539,11 @@ mod tests {
         config.state_dir = state_dir.into();
         let _lock = acquire(&config).unwrap();
         fs::write(config.state_dir.join("lock-held"), "ready").unwrap();
-        thread::sleep(Duration::from_millis(250));
+        thread::sleep(Duration::from_millis(750));
     }
 
     #[test]
-    fn cross_process_release_makes_the_lock_immediately_acquirable() {
+    fn cross_process_lock_is_released_when_the_holder_is_killed() {
         let mut config = config(200);
         config.lock_acquire_timeout_ms = 50;
         ensure_private_dir(&config).unwrap();
@@ -565,8 +565,9 @@ mod tests {
             acquire(&config).unwrap_err(),
             "timed out waiting for state lock"
         );
-        assert!(child.wait().unwrap().success());
-        acquire(&config).expect("lock must be released when the child exits");
+        child.kill().unwrap();
+        assert!(!child.wait().unwrap().success());
+        acquire(&config).expect("kernel must release the lock when the child dies");
         fs::remove_dir_all(config.state_dir).unwrap();
     }
 

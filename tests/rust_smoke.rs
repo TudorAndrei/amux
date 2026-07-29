@@ -276,7 +276,7 @@ fn cli_clear_doctor_and_option_contracts_are_preserved() {
     assert!(
         String::from_utf8(lock_doctor.stdout)
             .unwrap()
-            .contains("locking: disabled (AMUX_LOCK=0)")
+            .contains("locking: disabled")
     );
     assert!(amux(&state).arg("clear").status().unwrap().success());
     assert!(!state.join("state.json").exists());
