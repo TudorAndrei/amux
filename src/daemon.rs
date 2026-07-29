@@ -100,6 +100,15 @@ pub fn run(config: Config) -> Result<(), String> {
         }
         match listener.accept() {
             Ok((stream, _)) => {
+                // BSD and macOS inherit the listener's O_NONBLOCK on the
+                // accepted socket; Linux does not. Left inherited, a response
+                // larger than the socket send buffer (8 KiB by default on
+                // macOS) fails mid-`write_all` with WouldBlock and the client
+                // sees a truncated line.
+                if let Err(error) = stream.set_nonblocking(false) {
+                    eprintln!("amux daemon: cannot restore blocking mode: {error}");
+                    continue;
+                }
                 let config = config.clone();
                 let shared = Arc::clone(&shared);
                 thread::spawn(move || {
