@@ -2,6 +2,15 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.4.1](https://github.com/TudorAndrei/amux/compare/5e519ccc22400666b1144da6e453e13ead4c54e8..v0.4.1) - 2026-07-29
+#### Bug Fixes
+- (**daemon**) retire a daemon left behind by an upgrade - ([05260c7](https://github.com/TudorAndrei/amux/commit/05260c7c23d7f29d8bf7bd99abace4654be7e486)) - TudorAndrei
+- (**daemon**) restore blocking mode on accepted connections - ([5e519cc](https://github.com/TudorAndrei/amux/commit/5e519ccc22400666b1144da6e453e13ead4c54e8)) - TudorAndrei
+#### Continuous Integration
+- move verification from mise tasks into hk - ([7ba9726](https://github.com/TudorAndrei/amux/commit/7ba9726b3b1c97b51f262ff142e4aa4c7090a89f)) - TudorAndrei
+
+- - -
+
 ## [v0.4.0](https://github.com/TudorAndrei/amux/compare/36ef9b87df327870f065b505bc8a00abfeccb7f4..v0.4.0) - 2026-07-29
 #### Features
 - ![BREAKING](https://img.shields.io/badge/BREAKING-red) replace state lock lease with advisory locking - ([36ef9b8](https://github.com/TudorAndrei/amux/commit/36ef9b87df327870f065b505bc8a00abfeccb7f4)) - TudorAndrei
