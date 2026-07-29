@@ -52,3 +52,9 @@ fi
 temporary_binary="$ROOT/bin/.amux-rs.$$"
 install -m 755 "$source_binary" "$temporary_binary"
 mv -f "$temporary_binary" "$ROOT/bin/amux-rs"
+
+# A daemon started by the previous build keeps serving the old code, which then
+# disagrees with the new hooks about on-disk formats — an old mkdir-lock daemon
+# meeting the new state.lock file stalls every hook for its full lock budget.
+# Retire it here; the next hook event starts the new build lazily.
+"$ROOT/bin/amux-rs" daemon --stop 2>/dev/null || true

@@ -58,7 +58,11 @@ enum Commands {
     #[command(name = "next-attention")]
     NextAttention,
     /// Run the persistent amux daemon.
-    Daemon,
+    Daemon {
+        /// Ask a running daemon to exit instead of starting one.
+        #[arg(long)]
+        stop: bool,
+    },
     /// Check local dependencies and state paths.
     Doctor,
     /// Install global agent hooks. The default is read-only dry-run mode.
@@ -387,7 +391,8 @@ fn main() -> ExitCode {
             0
         }),
         Commands::NextAttention => cmd_next_attention(&config).map(|_| 0),
-        Commands::Daemon => daemon::run(config).map(|_| 0),
+        Commands::Daemon { stop: true } => daemon::stop(&config).map(|_| 0),
+        Commands::Daemon { stop: false } => daemon::run(config).map(|_| 0),
         Commands::Doctor => Ok(cmd_doctor(&config)),
         Commands::InstallHooks(mode) => hooks::install(mode.mode()).map(|_| 0),
         Commands::UninstallHooks(mode) => hooks::uninstall(mode.mode()).map(|_| 0),

@@ -1311,3 +1311,80 @@ fn tmux_plugin_loads_native_picker_without_status_wiring() {
         .status();
     fs::remove_dir_all(tmux_tmpdir).unwrap();
 }
+
+/// A response larger than the socket send buffer must arrive whole. macOS and
+/// BSD inherit the listener's O_NONBLOCK on accepted sockets, which truncated
+/// anything past 8 KiB mid-`write_all`; Linux does not, so this only fails on
+/// the platforms that inherit.
+#[cfg(unix)]
+#[test]
+fn a_response_larger_than_the_socket_buffer_arrives_intact() {
+    let _lock = real_server_test_lock();
+    let state = temp_dir("daemon-large-response");
+    fs::create_dir_all(&state).unwrap();
+    // Seed enough records that the reply comfortably exceeds 8 KiB.
+    let mut records = serde_json::Map::new();
+    for index in 0..400 {
+        records.insert(
+            format!("codex:session-{index}:%{index}"),
+            serde_json::json!({
+                "agent": "codex",
+                "tmux_session": format!("session-{index}"),
+                "tmux_pane": format!("%{index}"),
+                "cwd": "/tmp/large-response-probe",
+                "status": "running",
+                "reason": "large response probe record",
+                "last_event": "PreToolUse",
+                "updated_at": seconds_since_epoch(),
+            }),
+        );
+    }
+    fs::write(
+        state.join("state.json"),
+        serde_json::json!({"version": 1, "records": records}).to_string(),
+    )
+    .unwrap();
+
+    let mut daemon = Command::new(env!("CARGO_BIN_EXE_amux-rs"));
+    daemon
+        .arg("daemon")
+        .env("AMUX_STATE_DIR", &state)
+        .env_remove("TMUX")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut daemon = daemon.spawn().unwrap();
+
+    // `subscribe` replies with the whole State. `health` carries only topology
+    // and views, which stay empty without a tmux server to reflect, so it never
+    // reaches the buffer size this guards.
+    let response = daemon_request(&state, r#"{"kind":"subscribe"}"#);
+    assert!(
+        response.get("error").is_none(),
+        "subscribe reported an error: {response}"
+    );
+    let encoded = response.to_string();
+    assert!(
+        encoded.len() > 8192,
+        "probe did not exceed the 8 KiB socket buffer ({} bytes); the test would \
+         pass even with the truncation bug",
+        encoded.len()
+    );
+    assert_eq!(
+        response["state"]["records"]
+            .as_object()
+            .expect("records object")
+            .len(),
+        400
+    );
+
+    let _ = daemon_request(&state, r#"{"kind":"shutdown"}"#);
+    let _ = daemon.wait();
+    fs::remove_dir_all(state).unwrap();
+}
+
+fn seconds_since_epoch() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+}

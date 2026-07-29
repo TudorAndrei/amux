@@ -13,13 +13,22 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// How often an idle subscription wakes to look for a new revision.
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// How long a broadcast may block before the subscriber is treated as dead.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_REQUEST_BYTES: u64 = 1024 * 1024;
+/// How often the daemon checks whether its own executable was replaced.
+const BINARY_CHECK_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Size and mtime are enough to notice an upgrade: installs replace the file
+/// rather than editing it in place.
+fn binary_fingerprint(path: &std::path::Path) -> Option<(u64, std::time::SystemTime)> {
+    let metadata = fs::metadata(path).ok()?;
+    Some((metadata.len(), metadata.modified().ok()?))
+}
 
 /// A socket timeout surfaces as `WouldBlock` on Linux and `TimedOut` on macOS;
 /// `Interrupted` means the syscall was cut short by a signal. None of them say
@@ -90,6 +99,12 @@ pub fn run(config: Config) -> Result<(), String> {
     listener
         .set_nonblocking(true)
         .map_err(|error| error.to_string())?;
+    // An upgrade replaces the binary while this process keeps serving the old
+    // code, which then disagrees with the new hooks about on-disk formats. Retire
+    // ourselves when the executable changes so the next hook starts the new one.
+    let executable = std::env::current_exe().ok();
+    let installed = executable.as_deref().and_then(binary_fingerprint);
+    let mut last_binary_check = Instant::now();
     loop {
         if shared
             .lock()
@@ -97,6 +112,19 @@ pub fn run(config: Config) -> Result<(), String> {
             .shutdown
         {
             break;
+        }
+        if last_binary_check.elapsed() >= BINARY_CHECK_INTERVAL {
+            last_binary_check = Instant::now();
+            if let (Some(path), Some(expected)) = (executable.as_deref(), installed)
+                // A failed stat is transient (or a mid-install rename); only a
+                // successful, different fingerprint means we are stale.
+                && binary_fingerprint(path).is_some_and(|current| current != expected)
+            {
+                eprintln!(
+                    "amux daemon: executable changed on disk; exiting so the next event starts the current build"
+                );
+                break;
+            }
         }
         match listener.accept() {
             Ok((stream, _)) => {
@@ -423,6 +451,23 @@ pub fn send_event(config: &Config, request: HookRequest) -> Result<(), String> {
     response.error.map_or(Ok(()), Err)
 }
 
+/// Ask a running daemon to exit. A daemon that is not running is the desired
+/// end state, so a failed connect succeeds. `Request::Shutdown` predates the
+/// versions this needs to retire, so an older daemon understands it too.
+pub fn stop(config: &Config) -> Result<(), String> {
+    let Ok(mut stream) = UnixStream::connect(socket_path(config)) else {
+        return Ok(());
+    };
+    serde_json::to_writer(&mut stream, &Request::Shutdown).map_err(|error| error.to_string())?;
+    stream.write_all(b"\n").map_err(|error| error.to_string())?;
+    stream
+        .shutdown(std::net::Shutdown::Write)
+        .map_err(|error| error.to_string())?;
+    let mut response = String::new();
+    let _ = BufReader::new(stream).read_line(&mut response);
+    Ok(())
+}
+
 pub fn clear(config: &Config) -> Result<(), String> {
     let mut stream = UnixStream::connect(socket_path(config)).map_err(|error| error.to_string())?;
     serde_json::to_writer(&mut stream, &Request::Clear).map_err(|error| error.to_string())?;
@@ -518,6 +563,27 @@ fn context_from_request(request: &HookRequest) -> Option<crate::event::TmuxConte
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Write};
+
+    /// The upgrade check is only as good as this fingerprint: an install that
+    /// replaces the file must read as different, and an untouched file must not.
+    #[test]
+    fn binary_fingerprint_tracks_replacement() {
+        let dir = std::env::temp_dir().join(format!("amux-fingerprint-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("amux-rs");
+        fs::write(&path, b"first build").unwrap();
+        let original = binary_fingerprint(&path).expect("fingerprint of an existing file");
+        assert_eq!(binary_fingerprint(&path), Some(original));
+
+        // Installs replace rather than edit, so compare against a renamed file.
+        let replacement = dir.join("amux-rs.new");
+        fs::write(&replacement, b"second build, a different length").unwrap();
+        fs::rename(&replacement, &path).unwrap();
+        assert_ne!(binary_fingerprint(&path), Some(original));
+
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(binary_fingerprint(&path), None, "a missing file has none");
+    }
 
     fn shared() -> Arc<Mutex<Shared>> {
         Arc::new(Mutex::new(Shared {
