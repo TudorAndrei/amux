@@ -7,35 +7,35 @@
 - [x] Add notification-type classification in `src/event.rs::normalize_at`.
 - [x] Add `src/event.rs` unit coverage for `idle_prompt`, `permission_prompt`,
   `agent_completed`, `agent_needs_input`, and unknown notification types.
-- [ ] Commit: `fix(claude): distinguish completion notifications from attention`
+- [x] Commit: `fix(claude): distinguish completion notifications from attention`
 
 ## Phase 2: Prove the installed hook contract and document it
 
-- [ ] Add a rendered-hook regression scenario in `tests/rust_smoke.rs` for
+- [x] Add a rendered-hook regression scenario in `tests/rust_smoke.rs` for
   `Stop` followed by `idle_prompt` and `permission_prompt`, in both daemon and
   `AMUX_NO_DAEMON=1` paths.
-- [ ] Update `docs/events.md` and `README.md` with the Claude
+- [x] Update `docs/events.md` and `README.md` with the Claude
   notification-type mapping.
-- [ ] Run `cargo test`, `tests/smoke.sh`, and `hk check`.
-- [ ] Commit: `test(claude): cover stop followed by idle notification`
+- [x] Run `cargo test`, `tests/smoke.sh`, and `hk check`.
+- [x] Commit: `test(claude): cover stop followed by idle notification`
 
 ## Verification
 
-- [ ] `src/event.rs` keeps a Claude `idle_prompt` record at `done` with
+- [x] `src/event.rs` keeps a Claude `idle_prompt` record at `done` with
   `attention == false` after a preceding `Stop`.
-- [ ] `src/event.rs` maps `permission_prompt` and `agent_needs_input` to
+- [x] `src/event.rs` maps `permission_prompt` and `agent_needs_input` to
   `attention`.
-- [ ] Explicit `--status` and `--attention` arguments retain precedence over
+- [x] Explicit `--status` and `--attention` arguments retain precedence over
   Claude notification-type inference.
-- [ ] The rendered Claude template works in both daemon and daemon-less event
+- [x] The rendered Claude template works in both daemon and daemon-less event
   paths without hard-coding the TPM launcher location.
-- [ ] `tests/rust_smoke.rs` verifies the rendered hook lifecycle regression.
-- [ ] `cargo test`, `tests/smoke.sh`, and `hk check` pass.
-- [ ] Codex's existing explicit terminal mapping remains unchanged.
+- [x] `tests/rust_smoke.rs` verifies the rendered hook lifecycle regression.
+- [x] `cargo test`, `tests/smoke.sh`, and `hk check` pass.
+- [x] Codex's existing explicit terminal mapping remains unchanged.
 
 ## Review
 
-- [ ] Code reviewed.
-- [ ] PLAN.md updated if approach changed during implementation.
-- [ ] All phase commits are clean and describe their intent.
-- [ ] TODO.md items all checked off.
+- [x] Code reviewed.
+- [x] PLAN.md updated if approach changed during implementation.
+- [x] All phase commits are clean and describe their intent.
+- [x] TODO.md items all checked off.

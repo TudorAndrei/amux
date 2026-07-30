@@ -371,6 +371,111 @@ fn rendered_codex_hook_commands_produce_the_declared_statuses() {
 }
 
 #[test]
+fn rendered_claude_hooks_classify_completion_notifications_in_both_event_paths() {
+    use std::io::Write;
+
+    let home = temp_dir("rendered-claude-home");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let setup_state = temp_dir("rendered-claude-setup");
+    let install = amux(&setup_state)
+        .env("HOME", &home)
+        .env("AMUX_ROOT", root)
+        .args(["install-hooks", "--write"])
+        .output()
+        .unwrap();
+    assert!(install.status.success());
+    let hooks: Value =
+        serde_json::from_slice(&fs::read(home.join(".claude/settings.json")).unwrap()).unwrap();
+    let notification = hooks["hooks"]["Notification"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(!notification.contains("--attention"));
+    let stop = hooks["hooks"]["Stop"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(stop.contains("--status done --attention 0"));
+    let rendered_command = |command: &str| {
+        command.replacen(
+            &format!("'{}'", root.join("bin/amux").display()),
+            &format!("'{}'", env!("CARGO_BIN_EXE_amux-rs")),
+            1,
+        )
+    };
+
+    for daemonless in [true, false] {
+        let state = temp_dir(if daemonless {
+            "rendered-claude-daemonless"
+        } else {
+            "rendered-claude-daemon"
+        });
+        for (command, payload) in [
+            (
+                stop.as_str(),
+                br#"{"session_id":"rendered-claude"}"#.as_slice(),
+            ),
+            (
+                notification.as_str(),
+                br#"{"session_id":"rendered-claude","notification_type":"idle_prompt"}"#.as_slice(),
+            ),
+        ] {
+            let command = rendered_command(command);
+            let mut invocation = Command::new("sh");
+            invocation
+                .args(["-c", command.as_str()])
+                .env("AMUX_STATE_DIR", &state)
+                .env_remove("TMUX")
+                .stdin(Stdio::piped());
+            if daemonless {
+                invocation.env("AMUX_NO_DAEMON", "1");
+            }
+            let mut child = invocation.spawn().unwrap();
+            child.stdin.as_mut().unwrap().write_all(payload).unwrap();
+            assert!(child.wait_with_output().unwrap().status.success());
+        }
+        let listed = amux(&state).args(["list", "--json"]).output().unwrap();
+        let listed: Value = serde_json::from_slice(&listed.stdout).unwrap();
+        let record = &listed["records"]["claude:rendered-claude"];
+        assert_eq!(record["status"], "done");
+        assert_eq!(record["attention"], false);
+
+        let mut invocation = Command::new("sh");
+        let command = rendered_command(&notification);
+        invocation
+            .args(["-c", command.as_str()])
+            .env("AMUX_STATE_DIR", &state)
+            .env_remove("TMUX")
+            .stdin(Stdio::piped());
+        if daemonless {
+            invocation.env("AMUX_NO_DAEMON", "1");
+        }
+        let mut child = invocation.spawn().unwrap();
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(
+                br#"{"session_id":"rendered-claude","notification_type":"permission_prompt"}"#,
+            )
+            .unwrap();
+        assert!(child.wait_with_output().unwrap().status.success());
+        let listed = amux(&state).args(["list", "--json"]).output().unwrap();
+        let listed: Value = serde_json::from_slice(&listed.stdout).unwrap();
+        let record = &listed["records"]["claude:rendered-claude"];
+        assert_eq!(record["status"], "attention");
+        assert_eq!(record["attention"], true);
+
+        if !daemonless {
+            let _ = daemon_request(&state, r#"{"kind":"shutdown"}"#);
+        }
+        fs::remove_dir_all(state).unwrap();
+    }
+    fs::remove_dir_all(setup_state).unwrap();
+    fs::remove_dir_all(home).unwrap();
+}
+
+#[test]
 #[cfg(unix)]
 fn daemon_adopts_an_orphaned_event_log_before_compacting() {
     let _lock = real_server_test_lock();

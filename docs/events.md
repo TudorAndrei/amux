@@ -44,10 +44,15 @@ intentional and documented rather than masked with a timer.
 
 - `SessionStart` -> `running`
 - `UserPromptSubmit` -> `running`
-- `Notification` -> `attention`
+- `Notification` (`permission_prompt`, `agent_needs_input`) -> `attention`
+- `Notification` (`idle_prompt`, `agent_completed`) -> `done`
+- Unknown `Notification` types -> `attention`
 - `Stop` -> `done`
 
-Claude global hooks are installed into `~/.claude/settings.json`.
+Claude global hooks are installed into `~/.claude/settings.json`. Claude emits
+`idle_prompt` after a normal response, so it must not overwrite the preceding
+`Stop` state as attention. Explicit command-line status and attention values
+continue to override this payload-based mapping.
 
 ## opencode
 

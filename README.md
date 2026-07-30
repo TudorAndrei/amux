@@ -65,6 +65,9 @@ Initial normalization is conservative:
 
 - permission, approval, notification, idle, ask, and waiting events set
   `attention=true`
+- Claude `Notification` payloads are more specific: `idle_prompt` and
+  `agent_completed` map to `done`, while `permission_prompt`,
+  `agent_needs_input`, and unknown types map to `attention`
 - session-end events map to `offline`; stop, end, idle, done, and complete
   events map to `done` unless they are also
   attention events
