@@ -30,7 +30,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "__AMUX_BIN__ event --agent claude --event Notification --attention 1 --reason \"notification\"",
+            "command": "__AMUX_BIN__ event --agent claude --event Notification",
             "timeout": 5
           }
         ]
@@ -42,7 +42,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "__AMUX_BIN__ event --agent claude --event Stop",
+            "command": "__AMUX_BIN__ event --agent claude --event Stop --status done --attention 0",
             "timeout": 5
           }
         ]
