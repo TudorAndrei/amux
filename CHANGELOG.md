@@ -2,6 +2,16 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.4.2](https://github.com/TudorAndrei/amux/compare/c1cde2180f954d21d23bfdf9734a55aa832abe6c..v0.4.2) - 2026-07-30
+#### Bug Fixes
+- (**claude**) distinguish completion notifications from attention - ([4295c01](https://github.com/TudorAndrei/amux/commit/4295c0171bc4a51afad346411a16547b9f44523d)) - TudorAndrei
+#### Documentation
+- describe how an amux update reaches a running install - ([c1cde21](https://github.com/TudorAndrei/amux/commit/c1cde2180f954d21d23bfdf9734a55aa832abe6c)) - TudorAndrei
+#### Tests
+- (**claude**) cover stop followed by idle notification - ([810a206](https://github.com/TudorAndrei/amux/commit/810a206b779c6bfa89877f63f391139f61168524)) - TudorAndrei
+
+- - -
+
 ## [v0.4.1](https://github.com/TudorAndrei/amux/compare/5e519ccc22400666b1144da6e453e13ead4c54e8..v0.4.1) - 2026-07-29
 #### Bug Fixes
 - (**daemon**) retire a daemon left behind by an upgrade - ([05260c7](https://github.com/TudorAndrei/amux/commit/05260c7c23d7f29d8bf7bd99abace4654be7e486)) - TudorAndrei
