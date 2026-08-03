@@ -33,6 +33,8 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Print retained lifecycle transitions.
+    Events(EventsArgs),
     /// Remove amux state and its event log.
     Clear,
     /// Open the native amux picker.
@@ -77,6 +79,35 @@ struct EventArgs {
     /// Explicit short status reason.
     #[arg(long, default_value = "")]
     reason: String,
+}
+
+#[derive(Debug, Args)]
+struct EventsArgs {
+    /// Keep events from this agent product only.
+    #[arg(long)]
+    agent: Option<String>,
+    /// Keep events from this tmux or agent session only.
+    #[arg(long)]
+    session: Option<String>,
+    /// Keep events from this tmux pane only.
+    #[arg(long)]
+    pane: Option<String>,
+    /// Return at most this many newest matches, in chronological order.
+    #[arg(long, default_value_t = 100, value_parser = parse_event_limit)]
+    limit: usize,
+    /// Emit a versioned JSON object instead of tab-separated text.
+    #[arg(long)]
+    json: bool,
+}
+
+fn parse_event_limit(value: &str) -> Result<usize, String> {
+    match value.parse::<usize>() {
+        Ok(value @ 1..=state::MAX_EVENT_HISTORY_LIMIT) => Ok(value),
+        _ => Err(format!(
+            "limit must be between 1 and {}",
+            state::MAX_EVENT_HISTORY_LIMIT
+        )),
+    }
 }
 
 #[derive(Debug, Args)]
@@ -363,6 +394,31 @@ pub fn run() -> ExitCode {
             );
             Ok(0)
         }),
+        Commands::Events(args) => {
+            let filter = state::EventHistoryFilter {
+                agent: args.agent.as_deref(),
+                session: args.session.as_deref(),
+                pane: args.pane.as_deref(),
+            };
+            state::event_history(&config, filter, args.limit).and_then(|events| {
+                if args.json {
+                    println!(
+                        "{}",
+                        serde_json::to_string(&serde_json::json!({
+                            "version": 1,
+                            "events": events,
+                        }))
+                        .map_err(|error| error.to_string())?
+                    );
+                } else {
+                    let text = render::events(&events);
+                    if !text.is_empty() {
+                        println!("{text}");
+                    }
+                }
+                Ok(0)
+            })
+        }
         Commands::Clear => match ipc::clear(&config) {
             Ok(()) => Ok(0),
             Err(ipc::ClientError::Unavailable(_)) => state::clear(&config).map(|_| 0),

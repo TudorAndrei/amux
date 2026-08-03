@@ -102,7 +102,7 @@ pub fn persist(
     crate::state::write_event(config, key, record, &Value::Object(fields), timestamp)
 }
 
-fn minimize_record(record: &mut Record, raw: Value) {
+pub(crate) fn minimize_record(record: &mut Record, raw: Value) {
     record.agent = truncate_utf8(&record.agent, MAX_AGENT_BYTES);
     record.agent_session_id = truncate_utf8(&record.agent_session_id, MAX_SESSION_BYTES);
     record.tmux_session = truncate_utf8(&record.tmux_session, MAX_TMUX_BYTES);
@@ -115,7 +115,7 @@ fn minimize_record(record: &mut Record, raw: Value) {
     record.raw = raw;
 }
 
-fn record_key(record: &Record) -> String {
+pub(crate) fn record_key(record: &Record) -> String {
     if !record.tmux_session.is_empty() && !record.tmux_pane.is_empty() {
         format!(
             "{}:{}:{}",
@@ -128,7 +128,7 @@ fn record_key(record: &Record) -> String {
     }
 }
 
-fn retained_metadata(raw: &Value) -> Value {
+pub(crate) fn retained_metadata(raw: &Value) -> Value {
     let Some(input) = raw.as_object() else {
         return Value::Object(Map::new());
     };

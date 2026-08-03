@@ -18,6 +18,24 @@ The Rust `install-hooks` command renders these templates with the absolute
 them; timestamped backups are created before existing configuration files are
 changed.
 
+## Retained history
+
+`amux events` streams valid records from `events.jsonl`, skips malformed lines
+with the same tolerance as compaction, filters by `--agent`, `--session`, and
+`--pane`, and keeps the newest matches in chronological order. The default
+limit is 100 and the accepted range is 1–1,000. A session filter matches a tmux
+session or, when hooks ran outside tmux, an agent session id.
+
+Plain output is tab-separated ISO timestamp, agent, status, tmux session, pane,
+event, reason, and cwd. All eight fields pass through terminal sanitization.
+`--json` emits one bounded document with `version: 1` and an `events` array.
+Before either form is emitted, stored records are capped again and raw metadata
+is re-applied to the lifecycle/session/cwd/reason/subagent allowlist. This keeps
+legacy or manually altered lines from bypassing the current privacy contract.
+History is transition-oriented, subject to compaction, and is not a complete
+audit trail. Setting `AMUX_EVENTS_PER_SESSION=0` disables automatic compaction;
+the command's 1,000-event maximum still applies.
+
 ## Codex
 
 - `SessionStart` (`startup|resume|clear`) -> `running`

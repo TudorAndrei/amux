@@ -119,14 +119,14 @@
 
 ## Phase 12: Add event-history inspection
 
-- [ ] Add the `events` CLI command.
-- [ ] Stream valid retained JSONL with agent/session/pane/limit filters.
-- [ ] Define chronological plain-text and bounded JSON output.
-- [ ] Sanitize every default text field.
-- [ ] Test empty history, filters, limits, malformed lines, disabled retention,
+- [x] Add the `events` CLI command.
+- [x] Stream valid retained JSONL with agent/session/pane/limit filters.
+- [x] Define chronological plain-text and bounded JSON output.
+- [x] Sanitize every default text field.
+- [x] Test empty history, filters, limits, malformed lines, disabled retention,
   and terminal controls.
-- [ ] Document history privacy and retention.
-- [ ] Commit: `feat(cli): expose retained event history`
+- [x] Document history privacy and retention.
+- [x] Commit: `feat(cli): expose retained event history`
 
 ## Phase 13: Add a headless live JSON stream
 

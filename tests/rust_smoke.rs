@@ -325,6 +325,149 @@ fn cli_clear_doctor_and_option_contracts_are_preserved() {
     fs::remove_dir_all(fake_bin).unwrap();
 }
 
+#[test]
+fn events_cli_filters_bounds_and_sanitizes_retained_history() {
+    let state = temp_dir("events-history");
+    let empty = amux(&state).args(["events", "--json"]).output().unwrap();
+    assert!(empty.status.success());
+    let empty: Value = serde_json::from_slice(&empty.stdout).unwrap();
+    assert_eq!(empty, serde_json::json!({"version": 1, "events": []}));
+
+    let events = [
+        serde_json::json!({
+            "key": "codex:one:%1",
+            "agent": "codex",
+            "agent_session_id": "agent-one",
+            "tmux_session": "one",
+            "tmux_pane": "%1",
+            "status": "running",
+            "last_event": "SessionStart",
+            "updated_at": 1,
+            "updated_at_iso": "1970-01-01T00:00:01Z",
+            "raw": {"session_id": "agent-one"}
+        })
+        .to_string(),
+        "not json".to_owned(),
+        serde_json::json!({
+            "key": "claude:two:%2",
+            "agent": "claude",
+            "agent_session_id": "agent-two",
+            "tmux_session": "two",
+            "tmux_pane": "%2",
+            "status": "done",
+            "last_event": "Stop",
+            "updated_at": 2,
+            "updated_at_iso": "1970-01-01T00:00:02Z"
+        })
+        .to_string(),
+        serde_json::json!({
+            "key": "codex:one:%1",
+            "agent": "codex",
+            "agent_session_id": "agent-one",
+            "tmux_session": "one",
+            "tmux_pane": "%1",
+            "cwd": "/tmp/project\u{1b}[2J",
+            "status": "attention",
+            "attention": true,
+            "reason": "wait\u{1b}[2J\nnext",
+            "last_event": "PermissionRequest",
+            "updated_at": 3,
+            "updated_at_iso": "1970-01-01T00:00:03Z",
+            "raw": {
+                "notification_type": "permission_prompt",
+                "secret": "must-not-escape"
+            },
+            "unknown_top_level": "must-not-escape"
+        })
+        .to_string(),
+        serde_json::json!({
+            "key": "codex:agent-only",
+            "agent": "codex",
+            "agent_session_id": "agent-only",
+            "status": "done",
+            "last_event": "Stop",
+            "updated_at": 4,
+            "updated_at_iso": "1970-01-01T00:00:04Z"
+        })
+        .to_string(),
+        serde_json::json!({"key": "missing-record"}).to_string(),
+    ]
+    .join("\n");
+    fs::write(state.join("events.jsonl"), format!("{events}\n")).unwrap();
+
+    let limited = amux(&state)
+        .args(["events", "--json", "--limit", "2"])
+        .output()
+        .unwrap();
+    assert!(limited.status.success());
+    let limited: Value = serde_json::from_slice(&limited.stdout).unwrap();
+    let limited = limited["events"].as_array().unwrap();
+    assert_eq!(limited.len(), 2);
+    assert_eq!(limited[0]["updated_at"], 3);
+    assert_eq!(limited[1]["updated_at"], 4);
+    assert!(limited[0]["raw"].get("secret").is_none());
+    assert!(limited[0].get("unknown_top_level").is_none());
+    assert_eq!(limited[0]["raw"]["notification_type"], "permission_prompt");
+
+    let filtered = amux(&state)
+        .args([
+            "events",
+            "--json",
+            "--agent",
+            "codex",
+            "--session",
+            "one",
+            "--pane",
+            "%1",
+            "--limit",
+            "1",
+        ])
+        .output()
+        .unwrap();
+    let filtered: Value = serde_json::from_slice(&filtered.stdout).unwrap();
+    assert_eq!(filtered["events"].as_array().unwrap().len(), 1);
+    assert_eq!(filtered["events"][0]["updated_at"], 3);
+
+    let agent_session = amux(&state)
+        .args(["events", "--json", "--session", "agent-only"])
+        .output()
+        .unwrap();
+    let agent_session: Value = serde_json::from_slice(&agent_session.stdout).unwrap();
+    assert_eq!(agent_session["events"].as_array().unwrap().len(), 1);
+    assert_eq!(agent_session["events"][0]["updated_at"], 4);
+
+    let plain = amux(&state)
+        .args(["events", "--agent", "codex", "--session", "one"])
+        .output()
+        .unwrap();
+    assert!(plain.status.success());
+    let plain = String::from_utf8(plain.stdout).unwrap();
+    assert!(!plain.contains('\u{1b}'));
+    assert!(plain.contains("wait^[[2J^Jnext"));
+    assert!(plain.contains("/tmp/project^[[2J"));
+
+    let unbounded_retention = amux(&state)
+        .env("AMUX_EVENTS_PER_SESSION", "0")
+        .args(["events", "--json", "--limit", "1"])
+        .output()
+        .unwrap();
+    assert!(unbounded_retention.status.success());
+    let unbounded_retention: Value = serde_json::from_slice(&unbounded_retention.stdout).unwrap();
+    assert_eq!(unbounded_retention["events"][0]["updated_at"], 4);
+
+    let excessive = amux(&state)
+        .args(["events", "--limit", "1001"])
+        .output()
+        .unwrap();
+    assert!(!excessive.status.success());
+    assert!(
+        String::from_utf8(excessive.stderr)
+            .unwrap()
+            .contains("between 1 and 1000")
+    );
+    fs::remove_dir_all(state).unwrap();
+}
+
 fn event(state: &Path, agent: &str, extra: &[&str], input: Vec<u8>) {
     let mut output = amux(state)
         .arg("event")

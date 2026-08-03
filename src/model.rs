@@ -48,6 +48,13 @@ pub struct Record {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct HistoryEvent {
+    pub key: String,
+    #[serde(flatten)]
+    pub record: Record,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AgentView {
     pub agent: String,
     pub agent_session_id: String,

@@ -83,6 +83,30 @@ manual `--status`/`--attention` overrides retain precedence.
 Status and list commands ignore records older than
 `${AMUX_STALE_SECONDS:-86400}` seconds.
 
+### Event history
+
+`amux events` reads the retained transition log without changing it. It returns
+the newest 100 matching events by default, capped at 1,000 with `--limit`, and
+prints those matches in chronological order. Filters may be combined:
+
+```bash
+amux events --agent codex --session work --pane %3 --limit 25
+amux events --json --session 0192f8a1-session-id
+```
+
+`--session` matches either the tmux session or the agent session id. Plain text
+uses stable tab-separated columns: ISO timestamp, agent, status, tmux session,
+pane, event, reason, and cwd. Every text field is terminal-sanitized. JSON is a
+single bounded object shaped as `{"version":1,"events":[...]}` and contains
+only the current minimized record fields and allowlisted raw metadata. Unknown
+legacy fields are discarded again while reading. Malformed log lines are
+skipped, and a missing or empty log returns no text or an empty JSON array.
+
+History has the same privacy and retention limits as `events.jsonl`; it is not
+an audit log. `AMUX_EVENTS_PER_SESSION=0` disables automatic compaction rather
+than deleting history, but `amux events` remains capped at 1,000 records per
+invocation.
+
 Session views only surface agents associated with tmux sessions. `amux sessions`,
 the picker ignores hook records captured outside
 tmux; those records remain available through `amux list` for debugging. Session
@@ -127,8 +151,8 @@ picker. If it is unavailable, hook events use a locked one-shot
 write and the next event starts a fresh daemon.
 
 Use `bin/amux doctor` to inspect the selected binary, tmux version, state-file
-compatibility, socket permissions, monitor connection, and Codex/Claude hook
-drift. A stale socket is
+compatibility, socket permissions, monitor connection, and integration drift
+for Codex, Claude, Pi, and opencode. A stale socket is
 recovered automatically when a daemon starts; an invalid state file is reported
 by `doctor` without being overwritten. If doctor reports hook drift after an
 upgrade, run `bin/amux install-hooks --write` to install the current mappings.

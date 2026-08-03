@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::fsutil::sync_dir;
-use crate::model::{Record, State};
+use crate::model::{HistoryEvent, Record, State};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
@@ -169,6 +169,75 @@ pub fn write_event(
 pub struct WriteEventResult {
     pub logged: bool,
     pub over_compact_threshold: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EventHistoryFilter<'a> {
+    pub agent: Option<&'a str>,
+    pub session: Option<&'a str>,
+    pub pane: Option<&'a str>,
+}
+
+pub const MAX_EVENT_HISTORY_LIMIT: usize = 1_000;
+
+/// Read the newest matching retained events while returning them in their
+/// original chronological order. Malformed lines are skipped just as they are
+/// during compaction, and every record is projected through durable intake's
+/// current minimization policy before it can be returned.
+pub fn event_history(
+    config: &Config,
+    filter: EventHistoryFilter<'_>,
+    limit: usize,
+) -> Result<Vec<HistoryEvent>, String> {
+    let limit = limit.min(MAX_EVENT_HISTORY_LIMIT);
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let input = match File::open(config.events_file()) {
+        Ok(input) => input,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.to_string()),
+    };
+    let mut input = BufReader::new(input);
+    let mut selected = VecDeque::with_capacity(limit);
+    loop {
+        let mut bytes = Vec::new();
+        let count = input
+            .read_until(b'\n', &mut bytes)
+            .map_err(|error| error.to_string())?;
+        if count == 0 {
+            break;
+        }
+        if bytes.last() == Some(&b'\n') {
+            bytes.pop();
+        }
+        if bytes.last() == Some(&b'\r') {
+            bytes.pop();
+        }
+        let Ok(mut event) = serde_json::from_slice::<HistoryEvent>(&bytes) else {
+            continue;
+        };
+        let raw = crate::intake::retained_metadata(&event.record.raw);
+        crate::intake::minimize_record(&mut event.record, raw);
+        event.key = crate::intake::record_key(&event.record);
+        if filter
+            .agent
+            .is_some_and(|agent| event.record.agent != agent)
+            || filter.session.is_some_and(|session| {
+                event.record.tmux_session != session && event.record.agent_session_id != session
+            })
+            || filter
+                .pane
+                .is_some_and(|pane| event.record.tmux_pane != pane)
+        {
+            continue;
+        }
+        selected.push_back(event);
+        if selected.len() > limit {
+            selected.pop_front();
+        }
+    }
+    Ok(selected.into_iter().collect())
 }
 
 fn append_event(config: &Config, event_log: &Value) -> Result<(), String> {
