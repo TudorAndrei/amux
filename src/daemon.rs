@@ -1,11 +1,11 @@
 mod live_model;
+mod maintenance;
 
 use crate::config::Config;
 use crate::event;
 use crate::ipc::{HookRequest, Request, Response};
 use crate::model::SessionView;
 use crate::state;
-use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -94,7 +94,7 @@ struct Shared {
     shutdown: bool,
     monitor_server: Option<PathBuf>,
     monitor_stop: Option<Arc<AtomicBool>>,
-    maintenance_active: Arc<AtomicBool>,
+    maintenance: maintenance::Maintenance,
 }
 
 pub fn run(config: Config) -> Result<(), String> {
@@ -131,7 +131,7 @@ pub fn run(config: Config) -> Result<(), String> {
         shutdown: false,
         monitor_server: None,
         monitor_stop: None,
-        maintenance_active: Arc::new(AtomicBool::new(false)),
+        maintenance: maintenance::Maintenance::default(),
     }));
     attach_monitor(&config, &shared, crate::tmux::server_from_env());
     listener
@@ -194,6 +194,9 @@ pub fn run(config: Config) -> Result<(), String> {
         && let Some(stop) = &guard.monitor_stop
     {
         stop.store(true, Ordering::Relaxed);
+    }
+    if let Ok(guard) = shared.lock() {
+        let _ = guard.maintenance.wait_idle();
     }
     remove_owned_socket(&path, owned_socket);
     Ok(())
@@ -302,14 +305,20 @@ fn handle(
                 .map_err(|_| "daemon state lock poisoned".to_owned())?;
             let revision = guard.model.apply_event_state(config, state::load(config)?);
             let retain_keys = guard.model.retain_keys();
+            let maintenance = guard.maintenance.clone();
             drop(guard);
             if write.over_compact_threshold {
-                schedule_compaction(config.clone(), Arc::clone(&shared), retain_keys);
+                maintenance.schedule(config.clone(), retain_keys);
             }
             reply(&mut stream, &Response::ok(revision))
         }
         Request::Clear => {
-            state::clear(config)?;
+            let maintenance = shared
+                .lock()
+                .map_err(|_| "daemon state lock poisoned".to_owned())?
+                .maintenance
+                .clone();
+            maintenance.clear(config)?;
             let mut guard = shared
                 .lock()
                 .map_err(|_| "daemon state lock poisoned".to_owned())?;
@@ -406,20 +415,6 @@ fn context_for_known_pane(
         }
     }
     None
-}
-
-fn schedule_compaction(config: Config, shared: Arc<Mutex<Shared>>, retain_keys: BTreeSet<String>) {
-    let active = match shared.lock() {
-        Ok(guard) => Arc::clone(&guard.maintenance_active),
-        Err(_) => return,
-    };
-    if active.swap(true, Ordering::AcqRel) {
-        return;
-    }
-    thread::spawn(move || {
-        let _ = state::compact_events(&config, &retain_keys);
-        active.store(false, Ordering::Release);
-    });
 }
 
 fn attach_monitor(config: &Config, shared: &Arc<Mutex<Shared>>, server: Option<PathBuf>) {
@@ -620,7 +615,7 @@ mod tests {
             shutdown: false,
             monitor_server: None,
             monitor_stop: None,
-            maintenance_active: Arc::new(AtomicBool::new(false)),
+            maintenance: maintenance::Maintenance::default(),
         }))
     }
 

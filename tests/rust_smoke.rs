@@ -235,6 +235,24 @@ fn cli_clear_doctor_and_option_contracts_are_preserved() {
     let doctor = String::from_utf8(doctor.stdout).unwrap();
     assert!(doctor.contains("tmux: ok (tmux 3.5)"));
     assert!(doctor.contains("state: v1 compatible"));
+    assert!(doctor.contains("maintenance: ok"));
+    fs::write(
+        state.join("maintenance.error"),
+        "injected compaction failure\n",
+    )
+    .unwrap();
+    let degraded = amux(&state)
+        .env("PATH", &path)
+        .arg("doctor")
+        .output()
+        .unwrap();
+    assert!(!degraded.status.success());
+    assert!(
+        String::from_utf8(degraded.stdout)
+            .unwrap()
+            .contains("maintenance: degraded (injected compaction failure)")
+    );
+    fs::remove_file(state.join("maintenance.error")).unwrap();
     let invalid_doctor = amux(&state)
         .env("PATH", &path)
         .env("AMUX_STALE_SECONDS", "-1")
@@ -519,6 +537,60 @@ fn daemon_adopts_an_orphaned_event_log_before_compacting() {
     assert!(!state.join("events.jsonl.compacting").exists());
     let _ = daemon_request(&state, r#"{"kind":"shutdown"}"#);
     let _ = daemon.wait();
+    fs::remove_dir_all(state).unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn daemon_clear_waits_for_maintenance_and_history_stays_absent() {
+    use std::io::Write;
+
+    let state = temp_dir("maintenance-clear");
+    let mut daemon = Command::new(env!("CARGO_BIN_EXE_amux-rs"));
+    daemon
+        .arg("daemon")
+        .env("AMUX_STATE_DIR", &state)
+        .env("AMUX_EVENTS_COMPACT_BYTES", "1")
+        .env("AMUX_EVENTS_PER_SESSION", "2")
+        .env_remove("TMUX")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut daemon = daemon.spawn().unwrap();
+    connect_daemon(&state.join("amux.sock"));
+
+    for index in 0..20 {
+        let mut hook = Command::new(env!("CARGO_BIN_EXE_amux-rs"));
+        hook.args(["event", "--agent", "codex", "--event", "PostToolUse"])
+            .env("AMUX_STATE_DIR", &state)
+            .env_remove("AMUX_NO_DAEMON")
+            .env_remove("TMUX")
+            .stdin(Stdio::piped());
+        let mut hook = hook.spawn().unwrap();
+        hook.stdin
+            .as_mut()
+            .unwrap()
+            .write_all(format!(r#"{{"session_id":"maintenance-{index}"}}"#).as_bytes())
+            .unwrap();
+        assert!(hook.wait_with_output().unwrap().status.success());
+    }
+    assert!(state.join("events.jsonl").exists() || state.join("events.jsonl.compacting").exists());
+
+    assert_eq!(
+        daemon_request(&state, r#"{"kind":"clear"}"#)["error"],
+        Value::Null
+    );
+    thread::sleep(Duration::from_millis(100));
+    for name in [
+        "state.json",
+        "events.jsonl",
+        "events.jsonl.compacting",
+        "events.jsonl.retained",
+    ] {
+        assert!(!state.join(name).exists(), "{name} reappeared after clear");
+    }
+
+    let _ = daemon_request(&state, r#"{"kind":"shutdown"}"#);
+    assert!(daemon.wait().unwrap().success());
     fs::remove_dir_all(state).unwrap();
 }
 

@@ -41,13 +41,13 @@
 
 ## Phase 5: Coordinate and recover event-log maintenance
 
-- [ ] Replace detached compaction state with tracked maintenance coordination.
-- [ ] Prevent pre-clear retained lines from installing after clear.
-- [ ] Recover or report post-rename compaction failures without restart.
-- [ ] Preserve chronology across orphan, retained, and newly appended events.
-- [ ] Add deterministic barriers for clear/compaction and failure injection.
-- [ ] Prove cleared state and event history remain absent after maintenance.
-- [ ] Commit: `fix(state): coordinate and recover event log maintenance`
+- [x] Replace detached compaction state with tracked maintenance coordination.
+- [x] Prevent pre-clear retained lines from installing after clear.
+- [x] Recover or report post-rename compaction failures without restart.
+- [x] Preserve chronology across orphan, retained, and newly appended events.
+- [x] Add deterministic barriers for clear/compaction and failure injection.
+- [x] Prove cleared state and event history remain absent after maintenance.
+- [x] Commit: `fix(state): coordinate and recover event log maintenance`
 
 ## Phase 6: Deepen IPC transport and error semantics
 

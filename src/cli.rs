@@ -235,6 +235,14 @@ fn cmd_doctor(config: &Config) -> i32 {
     } else {
         println!("state: not created yet");
     }
+    if config.maintenance_diagnostic_file().exists() {
+        let detail = fs::read_to_string(config.maintenance_diagnostic_file())
+            .unwrap_or_else(|error| format!("unreadable diagnostic: {error}"));
+        println!("maintenance: degraded ({})", detail.trim());
+        failure = true;
+    } else {
+        println!("maintenance: ok");
+    }
     let socket = daemon::socket_path(config);
     if socket.exists() {
         #[cfg(unix)]

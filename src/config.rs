@@ -103,4 +103,7 @@ impl Config {
     pub fn retained_events_file(&self) -> PathBuf {
         self.state_dir.join("events.jsonl.retained")
     }
+    pub fn maintenance_diagnostic_file(&self) -> PathBuf {
+        self.state_dir.join("maintenance.error")
+    }
 }

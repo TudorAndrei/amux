@@ -209,13 +209,32 @@ pub fn adopt_orphaned_log(config: &Config) -> Result<(), String> {
     fs::rename(&temp, config.events_file()).map_err(|error| error.to_string())?;
     sync_dir(&config.state_dir)?;
     fs::remove_file(orphan).map_err(|error| error.to_string())?;
+    sync_dir(&config.state_dir)?;
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CompactionStage {
+    Renamed,
+    Retained,
+    RetainedWritten,
+    Composed,
+    Installed,
+    Synced,
 }
 
 /// Retain the most recent configured number of valid events for every live
 /// record key. The potentially long streaming pass intentionally happens with
 /// no state lock held so hooks can continue appending to a fresh log.
 pub fn compact_events(config: &Config, retain_keys: &BTreeSet<String>) -> Result<(), String> {
+    compact_events_with(config, retain_keys, |_| Ok(()))
+}
+
+fn compact_events_with(
+    config: &Config,
+    retain_keys: &BTreeSet<String>,
+    mut checkpoint: impl FnMut(CompactionStage) -> Result<(), String>,
+) -> Result<(), String> {
     if config.events_per_session == 0 || !config.events_file().exists() {
         return Ok(());
     }
@@ -233,24 +252,81 @@ pub fn compact_events(config: &Config, retain_keys: &BTreeSet<String>) -> Result
         }
         fs::rename(config.events_file(), &compacting).map_err(|error| error.to_string())?;
     }
-
-    let retained = retained_events(config, retain_keys, &compacting)?;
     let retained_path = config.retained_events_file();
-    write_lines(&retained_path, &retained)?;
-
-    let _lock = acquire(config)?;
     let temp = config
         .state_dir
         .join(format!("events.jsonl.compact.{}", std::process::id()));
-    let mut output = private_writer(&temp)?;
-    copy_file(&retained_path, &mut output)?;
-    copy_file(&config.events_file(), &mut output)?;
-    output.sync_all().map_err(|error| error.to_string())?;
-    fs::rename(&temp, config.events_file()).map_err(|error| error.to_string())?;
-    sync_dir(&config.state_dir)?;
-    let _ = fs::remove_file(&retained_path);
-    fs::remove_file(&compacting).map_err(|error| error.to_string())?;
-    Ok(())
+    let mut installed = false;
+    let result = (|| {
+        sync_dir(&config.state_dir)?;
+        checkpoint(CompactionStage::Renamed)?;
+        let retained = retained_events(config, retain_keys, &compacting)?;
+        checkpoint(CompactionStage::Retained)?;
+        write_lines(&retained_path, &retained)?;
+        checkpoint(CompactionStage::RetainedWritten)?;
+
+        let _lock = acquire(config)?;
+        let mut output = private_writer(&temp)?;
+        copy_file(&retained_path, &mut output)?;
+        copy_file(&config.events_file(), &mut output)?;
+        output.sync_all().map_err(|error| error.to_string())?;
+        checkpoint(CompactionStage::Composed)?;
+        fs::rename(&temp, config.events_file()).map_err(|error| error.to_string())?;
+        installed = true;
+        checkpoint(CompactionStage::Installed)?;
+        sync_dir(&config.state_dir)?;
+        checkpoint(CompactionStage::Synced)?;
+        remove_if_exists(&retained_path)?;
+        remove_if_exists(&compacting)?;
+        sync_dir(&config.state_dir)
+    })();
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let recovery = recover_compaction(config, installed, &retained_path, &temp);
+            match recovery {
+                Ok(()) => Err(format!(
+                    "event-log compaction failed and was recovered: {error}"
+                )),
+                Err(recovery) => Err(format!(
+                    "event-log compaction failed: {error}; recovery failed: {recovery}"
+                )),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn compact_events_with_checkpoint(
+    config: &Config,
+    retain_keys: &BTreeSet<String>,
+    checkpoint: impl FnMut(CompactionStage) -> Result<(), String>,
+) -> Result<(), String> {
+    compact_events_with(config, retain_keys, checkpoint)
+}
+
+fn recover_compaction(
+    config: &Config,
+    installed: bool,
+    retained_path: &std::path::Path,
+    temp: &std::path::Path,
+) -> Result<(), String> {
+    remove_if_exists(temp)?;
+    remove_if_exists(retained_path)?;
+    if installed {
+        remove_if_exists(&config.compacting_events_file())?;
+        sync_dir(&config.state_dir)
+    } else {
+        adopt_orphaned_log(config)
+    }
+}
+
+fn remove_if_exists(path: &std::path::Path) -> Result<(), String> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 fn retained_events(
@@ -334,6 +410,26 @@ fn write_lines(path: &std::path::Path, lines: &[String]) -> Result<(), String> {
         output.write_all(b"\n").map_err(|error| error.to_string())?;
     }
     output.sync_all().map_err(|error| error.to_string())
+}
+
+pub(crate) fn write_maintenance_diagnostic(config: &Config, message: &str) -> Result<(), String> {
+    ensure_private_dir(config)?;
+    let mut output = private_writer(&config.maintenance_diagnostic_file())?;
+    output
+        .write_all(message.as_bytes())
+        .map_err(|error| error.to_string())?;
+    output.write_all(b"\n").map_err(|error| error.to_string())?;
+    output.sync_all().map_err(|error| error.to_string())?;
+    sync_dir(&config.state_dir)
+}
+
+pub(crate) fn clear_maintenance_diagnostic(config: &Config) -> Result<(), String> {
+    let path = config.maintenance_diagnostic_file();
+    if !path.exists() {
+        return Ok(());
+    }
+    remove_if_exists(&path)?;
+    sync_dir(&config.state_dir)
 }
 
 pub fn clear(config: &Config) -> Result<(), String> {
@@ -452,6 +548,58 @@ mod tests {
         );
         assert!(!config.compacting_events_file().exists());
         fs::remove_dir_all(config.state_dir).unwrap();
+    }
+
+    #[test]
+    fn every_post_rename_failure_recovers_and_a_later_compaction_succeeds() {
+        for stage_to_fail in [
+            CompactionStage::Renamed,
+            CompactionStage::Retained,
+            CompactionStage::RetainedWritten,
+            CompactionStage::Composed,
+            CompactionStage::Installed,
+            CompactionStage::Synced,
+        ] {
+            let config = config(2);
+            ensure_private_dir(&config).unwrap();
+            fs::write(
+                config.events_file(),
+                format!("{}\n{}\n", line("a", 1), line("a", 2)),
+            )
+            .unwrap();
+            let mut appended_live = false;
+            let error = compact_events_with_checkpoint(
+                &config,
+                &BTreeSet::from(["a".to_owned()]),
+                |stage| {
+                    if !appended_live && stage == CompactionStage::Renamed {
+                        fs::write(config.events_file(), format!("{}\n", line("a", 3))).unwrap();
+                        appended_live = true;
+                    }
+                    if stage == stage_to_fail {
+                        Err(format!("injected failure at {stage:?}"))
+                    } else {
+                        Ok(())
+                    }
+                },
+            )
+            .unwrap_err();
+            assert!(
+                error.contains("was recovered"),
+                "{stage_to_fail:?}: {error}"
+            );
+            assert!(!config.compacting_events_file().exists());
+            assert!(!config.retained_events_file().exists());
+
+            compact_events(&config, &BTreeSet::from(["a".to_owned()])).unwrap();
+            let ordinals = fs::read_to_string(config.events_file())
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str::<Value>(line).unwrap()["ordinal"].as_u64())
+                .collect::<Vec<_>>();
+            assert_eq!(ordinals, [Some(2), Some(3)], "{stage_to_fail:?}");
+            fs::remove_dir_all(config.state_dir).unwrap();
+        }
     }
 
     #[test]
