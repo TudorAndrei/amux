@@ -1,7 +1,9 @@
+mod live_model;
+
 use crate::config::Config;
 use crate::event;
 use crate::ipc::{HookRequest, Request, Response};
-use crate::model::{SessionView, State};
+use crate::model::SessionView;
 use crate::state;
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
@@ -88,10 +90,7 @@ fn remove_owned_socket(path: &std::path::Path, owned: SocketIdentity) {
 
 #[derive(Clone)]
 struct Shared {
-    revision: u64,
-    state: State,
-    topology: crate::tmux::Topology,
-    views: Vec<SessionView>,
+    model: live_model::LiveModel,
     shutdown: bool,
     monitor_server: Option<PathBuf>,
     monitor_stop: Option<Arc<AtomicBool>>,
@@ -127,12 +126,8 @@ pub fn run(config: Config) -> Result<(), String> {
     let owned_socket = socket_identity(&path)?;
     drop(startup_claim);
     let topology = crate::tmux::Topology::default();
-    let views = crate::sessions::views_with_topology(&config, &state, &topology);
     let shared = Arc::new(Mutex::new(Shared {
-        revision: 0,
-        state,
-        topology,
-        views,
+        model: live_model::LiveModel::new(&config, state, topology),
         shutdown: false,
         monitor_server: None,
         monitor_stop: None,
@@ -250,6 +245,8 @@ fn handle(
                 shared
                     .lock()
                     .map_err(|_| "daemon state lock poisoned".to_owned())?
+                    .model
+                    .response_snapshot()
                     .revision,
             ),
         ),
@@ -261,12 +258,14 @@ fn handle(
             reply(&mut stream, &Response::ok(0))
         }
         Request::Health => {
-            let guard = shared
+            let snapshot = shared
                 .lock()
-                .map_err(|_| "daemon state lock poisoned".to_owned())?;
+                .map_err(|_| "daemon state lock poisoned".to_owned())?
+                .model
+                .response_snapshot();
             reply(
                 &mut stream,
-                &Response::health(guard.revision, guard.topology.clone(), guard.views.clone()),
+                &Response::health(snapshot.revision, snapshot.topology, snapshot.views),
             )
         }
         Request::Event { request } => {
@@ -301,12 +300,8 @@ fn handle(
             let mut guard = shared
                 .lock()
                 .map_err(|_| "daemon state lock poisoned".to_owned())?;
-            guard.state = state::load(config)?;
-            guard.views =
-                crate::sessions::views_with_topology(config, &guard.state, &guard.topology);
-            guard.revision += 1;
-            let revision = guard.revision;
-            let retain_keys = guard.state.records.keys().cloned().collect::<BTreeSet<_>>();
+            let revision = guard.model.apply_event_state(config, state::load(config)?);
+            let retain_keys = guard.model.retain_keys();
             drop(guard);
             if write.over_compact_threshold {
                 schedule_compaction(config.clone(), Arc::clone(&shared), retain_keys);
@@ -318,27 +313,19 @@ fn handle(
             let mut guard = shared
                 .lock()
                 .map_err(|_| "daemon state lock poisoned".to_owned())?;
-            guard.state = State::initial();
-            guard.views =
-                crate::sessions::views_with_topology(config, &guard.state, &guard.topology);
-            guard.revision += 1;
-            reply(&mut stream, &Response::ok(guard.revision))
+            let revision = guard.model.clear(config);
+            reply(&mut stream, &Response::ok(revision))
         }
         Request::Subscribe => {
-            let (mut revision, initial, topology, views) = {
-                let guard = shared
-                    .lock()
-                    .map_err(|_| "daemon state lock poisoned".to_owned())?;
-                (
-                    guard.revision,
-                    guard.state.clone(),
-                    guard.topology.clone(),
-                    guard.views.clone(),
-                )
-            };
+            let initial = shared
+                .lock()
+                .map_err(|_| "daemon state lock poisoned".to_owned())?
+                .model
+                .response_snapshot();
+            let mut revision = initial.revision;
             reply(
                 &mut stream,
-                &Response::state(revision, initial, topology, views),
+                &Response::state(revision, initial.state, initial.topology, initial.views),
             )?;
             stream
                 .set_write_timeout(Some(WRITE_TIMEOUT))
@@ -378,15 +365,16 @@ fn handle(
                     if guard.shutdown {
                         return Ok(());
                     }
-                    if guard.revision == revision {
+                    let snapshot = guard.model.response_snapshot();
+                    if snapshot.revision == revision {
                         None
                     } else {
-                        revision = guard.revision;
+                        revision = snapshot.revision;
                         Some(Response::state(
                             revision,
-                            guard.state.clone(),
-                            guard.topology.clone(),
-                            guard.views.clone(),
+                            snapshot.state,
+                            snapshot.topology,
+                            snapshot.views,
                         ))
                     }
                 };
@@ -409,7 +397,7 @@ fn context_for_known_pane(
         return None;
     }
     for attempt in 0..10 {
-        let topology = shared.lock().ok()?.topology.clone();
+        let topology = shared.lock().ok()?.model.topology().clone();
         if let Some(context) = context_for_pane(&topology, pane_id) {
             return Some(context);
         }
@@ -460,15 +448,8 @@ fn attach_monitor(config: &Config, shared: &Arc<Mutex<Shared>>, server: Option<P
     crate::tmux::spawn(stop, Some(server.clone()), move |topology| {
         if let Ok(mut guard) = shared_for_monitor.lock()
             && guard.monitor_server.as_ref() == Some(&server)
-            && guard.topology != topology
         {
-            guard.topology = topology;
-            guard.views = crate::sessions::views_with_topology(
-                &config_for_monitor,
-                &guard.state,
-                &guard.topology,
-            );
-            guard.revision += 1;
+            guard.model.apply_topology(&config_for_monitor, topology);
         }
     });
 }
@@ -629,11 +610,13 @@ mod tests {
     }
 
     fn shared() -> Arc<Mutex<Shared>> {
+        let config = subscriber_config();
         Arc::new(Mutex::new(Shared {
-            revision: 0,
-            state: State::initial(),
-            topology: crate::tmux::Topology::default(),
-            views: Vec::new(),
+            model: live_model::LiveModel::new(
+                &config,
+                crate::model::State::initial(),
+                crate::tmux::Topology::default(),
+            ),
             shutdown: false,
             monitor_server: None,
             monitor_stop: None,
@@ -678,8 +661,9 @@ mod tests {
         );
         {
             let mut guard = published.lock().unwrap();
+            let mut state = guard.model.response_snapshot().state;
             for index in 0..2_000 {
-                guard.state.records.insert(
+                state.records.insert(
                     format!("codex:session-{index}"),
                     crate::model::Record {
                         agent: "codex".to_owned(),
@@ -688,7 +672,7 @@ mod tests {
                     },
                 );
             }
-            guard.revision = 1;
+            guard.model.apply_event_state(&subscriber_config(), state);
         }
         let mut update = String::new();
         reader.read_line(&mut update).unwrap();

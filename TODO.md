@@ -31,13 +31,13 @@
 
 ## Phase 4: Deepen the daemon live model
 
-- [ ] Put state, topology, views, and revision mutation behind live-model
+- [x] Put state, topology, views, and revision mutation behind live-model
   methods.
-- [ ] Centralize view recomputation and revision publication.
-- [ ] Keep monitor, shutdown, and maintenance facts internal.
-- [ ] Test event, clear, changed/unchanged topology, and coherent snapshots.
-- [ ] Verify no CLI or serialized-state behavior changes.
-- [ ] Commit: `refactor(daemon): concentrate live model invariants`
+- [x] Centralize view recomputation and revision publication.
+- [x] Keep monitor, shutdown, and maintenance facts internal.
+- [x] Test event, clear, changed/unchanged topology, and coherent snapshots.
+- [x] Verify no CLI or serialized-state behavior changes.
+- [x] Commit: `refactor(daemon): concentrate live model invariants`
 
 ## Phase 5: Coordinate and recover event-log maintenance
 
