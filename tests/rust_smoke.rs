@@ -1204,6 +1204,76 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
     assert_eq!(agents["live_agent_count"], 2);
     assert_eq!(agents["status"], "attention");
     assert_eq!(agents["agents"][0]["agent"], "claude");
+    let expected_pane = agents["agents"][0]["pane"].as_str().unwrap().to_owned();
+
+    // Keep a real tmux client attached to the older session, then execute the
+    // command bound by the plugin and prove it selects the newest live target.
+    let mut client_command = tmux_command(&tmux_tmpdir);
+    client_command
+        .args(["-S", &socket, "-C", "attach-session", "-t", "monitor"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut client = client_command.spawn().unwrap();
+    let client_name = {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let output = tmux_command(&tmux_tmpdir)
+                .args([
+                    "-S",
+                    &socket,
+                    "list-clients",
+                    "-F",
+                    "#{client_name}|#{session_name}",
+                ])
+                .output()
+                .unwrap();
+            let clients = String::from_utf8_lossy(&output.stdout);
+            if let Some(name) = clients.lines().find_map(|line| {
+                let (name, session) = line.split_once('|')?;
+                (session == "monitor").then(|| name.to_owned())
+            }) {
+                break name;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "control client did not attach: {clients}"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+    };
+    let switched = Command::new(env!("CARGO_BIN_EXE_amux-rs"))
+        .arg("next-attention")
+        .env("AMUX_STATE_DIR", &state)
+        .env("TMUX", format!("{socket},1,1"))
+        .env("AMUX_TMUX_CLIENT", &client_name)
+        .output()
+        .unwrap();
+    assert!(
+        switched.status.success(),
+        "next-attention failed: {}",
+        String::from_utf8_lossy(&switched.stderr)
+    );
+    let client_target = String::from_utf8(
+        tmux_command(&tmux_tmpdir)
+            .args([
+                "-S",
+                &socket,
+                "display-message",
+                "-p",
+                "-c",
+                &client_name,
+                "#{session_name}|#{pane_id}",
+            ])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(client_target.trim(), format!("agents|{expected_pane}"));
+    let _ = client.stdin.take();
+    let _ = client.kill();
+    let _ = client.wait();
     assert!(
         tmux_command(&tmux_tmpdir)
             .args(["-S", &socket, "new-window", "-d", "-t", "monitor"])

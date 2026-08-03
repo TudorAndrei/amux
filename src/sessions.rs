@@ -2,6 +2,15 @@ use crate::config::Config;
 use crate::event::now;
 use crate::model::{AgentView, Record, SessionView, State};
 
+/// Select the most recently updated live agent that needs attention.
+pub fn newest_live_attention(views: &[SessionView]) -> Option<&AgentView> {
+    views
+        .iter()
+        .flat_map(|session| session.agents.iter())
+        .filter(|agent| agent.attention && agent.live)
+        .max_by_key(|agent| agent.updated_at)
+}
+
 fn uuid_like(value: &str) -> bool {
     let bytes = value.as_bytes();
     bytes.len() == 36
@@ -258,6 +267,77 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
+
+    fn attention_agent(session: &str, pane: &str, updated_at: i64) -> AgentView {
+        AgentView {
+            agent: "codex".to_owned(),
+            agent_session_id: String::new(),
+            session: session.to_owned(),
+            pane: pane.to_owned(),
+            command: "codex".to_owned(),
+            title: String::new(),
+            cwd: String::new(),
+            status: "attention".to_owned(),
+            attention: true,
+            reason: String::new(),
+            last_event: String::new(),
+            live: true,
+            updated_at,
+        }
+    }
+
+    fn session_with_agents(agents: Vec<AgentView>) -> SessionView {
+        SessionView {
+            session: String::new(),
+            last_attached: 0,
+            attached: false,
+            status: String::new(),
+            attention: false,
+            agent_count: agents.len(),
+            live_agent_count: agents.iter().filter(|agent| agent.live).count(),
+            agents,
+            pane: String::new(),
+            reason: String::new(),
+            cwd: String::new(),
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn newest_live_attention_selects_the_newest_target() {
+        let views = vec![session_with_agents(vec![
+            attention_agent("older", "%1", 10),
+            attention_agent("newer", "%2", 20),
+        ])];
+
+        let target = newest_live_attention(&views).unwrap();
+        assert_eq!((&*target.session, &*target.pane), ("newer", "%2"));
+    }
+
+    #[test]
+    fn newest_live_attention_excludes_offline_agents() {
+        let mut offline = attention_agent("offline", "%1", 30);
+        offline.live = false;
+        let views = vec![session_with_agents(vec![
+            offline,
+            attention_agent("live", "%2", 20),
+        ])];
+
+        assert_eq!(newest_live_attention(&views).unwrap().session, "live");
+    }
+
+    #[test]
+    fn newest_live_attention_returns_none_without_a_live_target() {
+        let mut no_attention = attention_agent("quiet", "%1", 20);
+        no_attention.attention = false;
+        let mut offline = attention_agent("offline", "%2", 30);
+        offline.live = false;
+
+        assert!(
+            newest_live_attention(&[session_with_agents(vec![no_attention, offline])]).is_none()
+        );
+        assert!(newest_live_attention(&[]).is_none());
+    }
 
     #[test]
     fn cached_topology_keeps_attached_sessions() {
