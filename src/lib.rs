@@ -6,6 +6,7 @@ pub mod fsutil;
 pub mod hooks;
 pub mod intake;
 pub mod ipc;
+pub mod lifecycle;
 pub mod model;
 pub mod render;
 pub mod sessions;

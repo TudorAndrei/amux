@@ -771,7 +771,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_template_has_the_complete_explicit_nine_event_contract() {
+    fn codex_template_has_nine_adapter_events_without_policy_arguments() {
         let template: Value = serde_json::from_str(
             &fs::read_to_string(
                 PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("hooks/codex/hooks.json"),
@@ -781,25 +781,31 @@ mod tests {
         .unwrap();
         let hooks = template["hooks"].as_object().unwrap();
         let expected = [
-            ("SessionStart", Some("startup|resume|clear"), "running", "0"),
-            ("UserPromptSubmit", None, "running", "0"),
-            ("PreToolUse", None, "running", "0"),
-            ("PostToolUse", None, "running", "0"),
-            ("PermissionRequest", Some("*"), "attention", "1"),
-            ("PreCompact", None, "running", "0"),
-            ("PostCompact", None, "running", "0"),
-            ("Stop", None, "done", "0"),
-            ("SessionEnd", None, "offline", "0"),
+            ("SessionStart", Some("startup|resume|clear")),
+            ("UserPromptSubmit", None),
+            ("PreToolUse", None),
+            ("PostToolUse", None),
+            ("PermissionRequest", Some("*")),
+            ("PreCompact", None),
+            ("PostCompact", None),
+            ("Stop", None),
+            ("SessionEnd", None),
         ];
         assert_eq!(hooks.len(), expected.len());
-        for (event, matcher, status, attention) in expected {
+        for (event, matcher) in expected {
             let group = &hooks[event][0];
             assert_eq!(group.get("matcher").and_then(Value::as_str), matcher);
             let command = group["hooks"][0]["command"].as_str().unwrap();
             assert!(command.contains(&format!("--event {event}")));
-            assert!(command.contains(&format!("--status {status}")));
-            assert!(command.contains(&format!("--attention {attention}")));
+            assert!(!command.contains(" --status "));
+            assert!(!command.contains(" --attention "));
         }
+        assert!(
+            hooks["PermissionRequest"][0]["hooks"][0]["command"]
+                .as_str()
+                .unwrap()
+                .contains("--reason \"permission requested\"")
+        );
     }
 
     #[test]
@@ -914,8 +920,9 @@ mod tests {
                     .is_some_and(is_amux_command)
             })
             .unwrap();
-        installed["hooks"]["Stop"][stop_group]["hooks"][0]["command"] =
-            Value::String("/old/bin/amux event --agent codex --event Stop".to_owned());
+        installed["hooks"]["Stop"][stop_group]["hooks"][0]["command"] = Value::String(
+            "/old/bin/amux event --agent codex --event Stop --status done".to_owned(),
+        );
         installed["hooks"]["SessionStart"][0]["matcher"] = Value::String("startup".to_owned());
         write_json(&codex, &installed, "test", Mode::Write).unwrap();
         let drift = drift_at(&paths).unwrap();

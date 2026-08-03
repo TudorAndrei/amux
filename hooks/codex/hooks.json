@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "__AMUX_BIN__ event --agent codex --event SessionStart --status running --attention 0",
+            "command": "__AMUX_BIN__ event --agent codex --event SessionStart",
             "timeout": 5
           }
         ]
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "__AMUX_BIN__ event --agent codex --event UserPromptSubmit --status running --attention 0",
+            "command": "__AMUX_BIN__ event --agent codex --event UserPromptSubmit",
             "timeout": 5
           }
         ]
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "__AMUX_BIN__ event --agent codex --event PreToolUse --status running --attention 0",
+            "command": "__AMUX_BIN__ event --agent codex --event PreToolUse",
             "timeout": 5
           }
         ]
@@ -39,7 +39,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "__AMUX_BIN__ event --agent codex --event PostToolUse --status running --attention 0",
+            "command": "__AMUX_BIN__ event --agent codex --event PostToolUse",
             "timeout": 5
           }
         ]
@@ -51,7 +51,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "__AMUX_BIN__ event --agent codex --event PermissionRequest --status attention --attention 1 --reason \"permission requested\"",
+            "command": "__AMUX_BIN__ event --agent codex --event PermissionRequest --reason \"permission requested\"",
             "timeout": 5
           }
         ]
@@ -62,7 +62,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "__AMUX_BIN__ event --agent codex --event PreCompact --status running --attention 0",
+            "command": "__AMUX_BIN__ event --agent codex --event PreCompact",
             "timeout": 5
           }
         ]
@@ -73,7 +73,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "__AMUX_BIN__ event --agent codex --event PostCompact --status running --attention 0",
+            "command": "__AMUX_BIN__ event --agent codex --event PostCompact",
             "timeout": 5
           }
         ]
@@ -84,7 +84,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "__AMUX_BIN__ event --agent codex --event Stop --status done --attention 0",
+            "command": "__AMUX_BIN__ event --agent codex --event Stop",
             "timeout": 5
           }
         ]
@@ -95,7 +95,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "__AMUX_BIN__ event --agent codex --event SessionEnd --status offline --attention 0",
+            "command": "__AMUX_BIN__ event --agent codex --event SessionEnd",
             "timeout": 5
           }
         ]

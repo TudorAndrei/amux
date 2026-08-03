@@ -30,9 +30,11 @@ unchanged repeated events are not appended. The daemon retains at most
 `${AMUX_EVENTS_PER_SESSION:-200}` events for each
 `agent:tmux_session:pane` key, drops keys that have expired from state, and
 compacts once it reaches `${AMUX_EVENTS_COMPACT_BYTES:-8388608}` bytes. Set
-`AMUX_EVENTS_PER_SESSION=0` to disable daemon compaction. Stored hook payloads
-are capped at 4 KiB (with short strings and shallow containers) so a single
-event cannot defeat retention.
+`AMUX_EVENTS_PER_SESSION=0` to disable daemon compaction. Hook input is capped
+at 256 KiB before full allocation or parsing. Persisted raw metadata is a
+smaller explicit allowlist for lifecycle classification, session identity,
+cwd, reason, and subagent detection; tool input, messages, command text, and
+unknown fields are never written.
 The state directory is owner-only (`0700`), and both files are owner-readable
 and writable (`0600`), including daemon-less fallback writes. State writes use
 an advisory `flock` on `state.lock` so hooks arriving at the same time cannot
@@ -61,7 +63,8 @@ independent even when they share a tmux session. `amux sessions --json` returns
 an `agents` array for each session and a session-level status rolled up as:
 `attention`, `running`, `done`, then `offline`.
 
-Initial normalization is conservative:
+Lifecycle classification is centralized in the Rust process rather than
+duplicated in installed hook command arguments:
 
 - permission, approval, notification, idle, ask, and waiting events set
   `attention=true`
@@ -72,6 +75,10 @@ Initial normalization is conservative:
   events map to `done` unless they are also
   attention events
 - all other hook activity maps to `running`
+
+Codex's nine installed events use an explicit in-process mapping. Unknown
+future agent events remain conservative (`running`, without attention), and
+manual `--status`/`--attention` overrides retain precedence.
 
 Status and list commands ignore records older than
 `${AMUX_STALE_SECONDS:-86400}` seconds.

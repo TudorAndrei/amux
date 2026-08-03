@@ -413,7 +413,8 @@ fn rendered_claude_hooks_classify_completion_notifications_in_both_event_paths()
         .as_str()
         .unwrap()
         .to_owned();
-    assert!(stop.contains("--status done --attention 0"));
+    assert!(!stop.contains("--status"));
+    assert!(!stop.contains("--attention"));
     let rendered_command = |command: &str| {
         command.replacen(
             &format!("'{}'", root.join("bin/amux").display()),

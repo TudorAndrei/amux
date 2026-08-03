@@ -6,9 +6,11 @@ All integrations call:
 bin/amux event --agent <agent> --event <event>
 ```
 
-The raw hook payload is passed on stdin. amux retains a compact, bounded copy
-in `events.jsonl`; it is a transition log, so repeated events with unchanged
-status, attention, and reason are not appended.
+The raw hook payload is passed on stdin and is limited to 256 KiB. Before any
+state or history write, amux retains only allowlisted lifecycle, session, cwd,
+reason, and subagent metadata. Tool input, messages, command text, and unknown
+fields are discarded. `events.jsonl` is a transition log, so repeated events
+with unchanged status, attention, and reason are not appended.
 
 The Rust `install-hooks` command renders these templates with the absolute
 `bin/amux` path and merges duplicate-safe JSON entries. Use
@@ -28,9 +30,10 @@ changed.
 - `Stop` -> `done`
 - `SessionEnd` -> `offline`
 
-Codex global hooks are installed into `~/.codex/hooks.json`; every shipped
-command carries an explicit status or attention value, so the mapping does not
-depend on event-name inference. Codex has no `Notification` hook, so
+Codex global hooks are installed into `~/.codex/hooks.json`. The rendered hook
+commands carry only adapter concerns (event names, matchers, timeout, and the
+stable permission reason); the in-process lifecycle policy owns every status
+and attention mapping. Codex has no `Notification` hook, so
 `PermissionRequest` is its attention signal.
 
 `Stop` marks the end of the last observed turn, not the end of the Codex
@@ -51,8 +54,13 @@ intentional and documented rather than masked with a timer.
 
 Claude global hooks are installed into `~/.claude/settings.json`. Claude emits
 `idle_prompt` after a normal response, so it must not overwrite the preceding
-`Stop` state as attention. Explicit command-line status and attention values
-continue to override this payload-based mapping.
+`Stop` state as attention. The in-process policy reads only the retained
+notification type. Explicit command-line status and attention values remain
+available for manual callers and independently override policy results.
+
+Unknown events from any adapter are treated conservatively as non-terminal
+activity (`running`, without attention) unless their stable event name matches
+the generic permission/input, completion, or session-end rules.
 
 ## opencode
 

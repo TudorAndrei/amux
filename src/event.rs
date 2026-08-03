@@ -1,3 +1,4 @@
+use crate::lifecycle::{self, PolicyInput};
 use crate::model::Record;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -171,24 +172,6 @@ pub fn now() -> i64 {
         .as_secs() as i64
 }
 
-fn claude_notification_state(
-    agent: &str,
-    event: &str,
-    raw: &Value,
-) -> Option<(&'static str, bool)> {
-    if !agent.eq_ignore_ascii_case("claude") || !event.eq_ignore_ascii_case("notification") {
-        return None;
-    }
-    match raw_string(raw, &[&["notification_type"], &["notificationType"]])
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "idle_prompt" | "agent_completed" => Some(("done", false)),
-        "permission_prompt" | "agent_needs_input" => Some(("attention", true)),
-        _ => Some(("attention", true)),
-    }
-}
-
 fn iso_now(seconds: i64) -> String {
     // The legacy format is UTC RFC3339. This compact conversion deliberately has no locale dependency.
     let days = seconds.div_euclid(86_400);
@@ -271,52 +254,17 @@ pub fn normalize_at(input: NormalizeInput<'_>) -> (String, Record) {
     let tmux_pane = tmux.pane;
     let tmux_session = tmux.session;
     let tmux_window = tmux.window;
-    let lower = event.to_ascii_lowercase();
-    let claude_notification = claude_notification_state(agent, &event, &raw);
-    let attention = if attention_override.is_empty() {
-        claude_notification.map_or_else(
-            || {
-                [
-                    "permission",
-                    "approval",
-                    "notification",
-                    "idle",
-                    "ask",
-                    "waiting",
-                ]
-                .iter()
-                .any(|word| lower.contains(word))
-            },
-            |(_, attention)| attention,
-        )
-    } else {
-        attention_override == "1" || attention_override.eq_ignore_ascii_case("true")
-    };
-    let status = if !status_override.is_empty() {
-        status_override.to_owned()
-    } else if let Some((status, _)) = claude_notification {
-        status.to_owned()
-    } else if attention {
-        "attention".to_owned()
-    } else if lower.contains("sessionend") || lower.contains("session_end") {
-        "offline".to_owned()
-    } else if ["stop", "end", "idle", "done", "complete"]
-        .iter()
-        .any(|word| lower.contains(word))
-    {
-        "done".to_owned()
-    } else {
-        "running".to_owned()
-    };
-    let reason = if !reason_override.is_empty() {
-        truncate_utf8(reason_override, 256)
-    } else {
-        truncate_utf8(
-            &raw_string(&raw, &[&["reason"], &["message"], &["notificationType"]])
-                .if_empty(event.clone()),
-            256,
-        )
-    };
+    let classification = lifecycle::classify(PolicyInput {
+        agent,
+        event: &event,
+        status_override,
+        attention_override,
+        reason_override,
+        metadata: &raw,
+    });
+    let attention = classification.attention;
+    let status = classification.status;
+    let reason = truncate_utf8(&classification.reason, 256);
     let cwd = truncate_utf8(&cwd, 1024);
     let timestamp = now();
     let key = if !tmux_session.is_empty() && !tmux_pane.is_empty() {
@@ -384,60 +332,5 @@ mod tests {
         );
         assert!(compacted["wide"].as_object().unwrap().len() <= MAX_CONTAINER_ENTRIES);
         assert!(serde_json::to_vec(&compacted).unwrap().len() <= MAX_RAW_BYTES);
-    }
-
-    #[test]
-    fn session_end_normalizes_to_offline_before_generic_end_matching() {
-        let (_, record) = normalize_at(NormalizeInput {
-            agent: "codex",
-            event_override: "SessionEnd",
-            status_override: "",
-            attention_override: "",
-            reason_override: "",
-            raw: serde_json::json!({"session_id": "ended"}),
-            fallback_cwd: String::new(),
-            tmux: TmuxContext::default(),
-        });
-        assert_eq!(record.status, "offline");
-    }
-
-    #[test]
-    fn claude_notifications_use_their_payload_type() {
-        for (notification_type, status, attention) in [
-            ("idle_prompt", "done", false),
-            ("agent_completed", "done", false),
-            ("permission_prompt", "attention", true),
-            ("agent_needs_input", "attention", true),
-            ("future_notification", "attention", true),
-        ] {
-            let (_, record) = normalize_at(NormalizeInput {
-                agent: "claude",
-                event_override: "Notification",
-                status_override: "",
-                attention_override: "",
-                reason_override: "",
-                raw: serde_json::json!({"notification_type": notification_type}),
-                fallback_cwd: String::new(),
-                tmux: TmuxContext::default(),
-            });
-            assert_eq!(record.status, status, "{notification_type}");
-            assert_eq!(record.attention, attention, "{notification_type}");
-        }
-    }
-
-    #[test]
-    fn explicit_overrides_take_precedence_over_claude_notification_inference() {
-        let (_, record) = normalize_at(NormalizeInput {
-            agent: "claude",
-            event_override: "Notification",
-            status_override: "running",
-            attention_override: "1",
-            reason_override: "",
-            raw: serde_json::json!({"notification_type": "idle_prompt"}),
-            fallback_cwd: String::new(),
-            tmux: TmuxContext::default(),
-        });
-        assert_eq!(record.status, "running");
-        assert!(record.attention);
     }
 }

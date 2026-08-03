@@ -75,15 +75,15 @@
 
 ## Phase 8: Concentrate lifecycle policy
 
-- [ ] Add the in-process lifecycle policy module.
-- [ ] Move Claude, Codex, and generic classification out of
+- [x] Add the in-process lifecycle policy module.
+- [x] Move Claude, Codex, and generic classification out of
   `event::normalize_at`.
-- [ ] Remove duplicated status policy from hook command arguments.
-- [ ] Preserve explicit override precedence and conservative unknown handling.
-- [ ] Move policy assertions to lifecycle-interface tests.
-- [ ] Keep rendered Codex/Claude adapter smoke coverage.
-- [ ] Update `README.md` and `docs/events.md`.
-- [ ] Commit: `refactor(events): centralize agent lifecycle policy`
+- [x] Remove duplicated status policy from hook command arguments.
+- [x] Preserve explicit override precedence and conservative unknown handling.
+- [x] Move policy assertions to lifecycle-interface tests.
+- [x] Keep rendered Codex/Claude adapter smoke coverage.
+- [x] Update `README.md` and `docs/events.md`.
+- [x] Commit: `refactor(events): centralize agent lifecycle policy`
 
 ## Phase 9: Report drift for every installed integration
 
