@@ -197,6 +197,7 @@ struct OwnedHook {
 struct OwnedCommand {
     arguments: String,
     quoted: bool,
+    timeout: Option<u64>,
 }
 
 fn drift_document(name: &str, template: &Value, installed: &Value) -> Vec<String> {
@@ -231,7 +232,23 @@ fn drift_document(name: &str, template: &Value, installed: &Value) -> Vec<String
                         .map(|command| &command.arguments)
                         .collect::<Vec<_>>()
         }) {
-            messages.push(format!("{name}: launcher quoting drift for {}", hook.event));
+            if matches.iter().any(|item| {
+                item.matcher == hook.matcher
+                    && item
+                        .commands
+                        .iter()
+                        .map(|command| (&command.arguments, command.quoted))
+                        .collect::<Vec<_>>()
+                        == hook
+                            .commands
+                            .iter()
+                            .map(|command| (&command.arguments, command.quoted))
+                            .collect::<Vec<_>>()
+            }) {
+                messages.push(format!("{name}: timeout drift for {}", hook.event));
+            } else {
+                messages.push(format!("{name}: launcher quoting drift for {}", hook.event));
+            }
         } else if !matches.iter().any(|item| item.matcher == hook.matcher) {
             messages.push(format!("{name}: matcher drift for {}", hook.event));
         } else {
@@ -264,14 +281,17 @@ fn owned_hooks(document: &Value) -> Vec<OwnedHook> {
             };
             let mut commands: Vec<_> = hooks
                 .iter()
-                .filter_map(|hook| hook.get("command").and_then(Value::as_str))
-                .filter(|command| is_amux_command(command))
-                .filter_map(|command| {
+                .filter_map(|hook| {
+                    let command = hook.get("command").and_then(Value::as_str)?;
+                    is_amux_command(command).then_some((hook, command))
+                })
+                .filter_map(|(hook, command)| {
                     command_arguments(command).map(|arguments| OwnedCommand {
                         quoted: command
                             .find(" event ")
                             .is_some_and(|index| command[..index].ends_with('\'')),
                         arguments,
+                        timeout: hook.get("timeout").and_then(Value::as_u64),
                     })
                 })
                 .collect();
@@ -913,11 +933,31 @@ mod tests {
             assert!(!command.contains(" --status "));
             assert!(!command.contains(" --attention "));
         }
+        assert_eq!(
+            hooks["SessionEnd"][0]["hooks"][0]["timeout"].as_u64(),
+            Some(3)
+        );
         assert!(
             hooks["PermissionRequest"][0]["hooks"][0]["command"]
                 .as_str()
                 .unwrap()
                 .contains("--reason \"permission requested\"")
+        );
+    }
+
+    #[test]
+    fn codex_timeout_drift_is_reported() {
+        let template = template_json(
+            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("hooks/codex/hooks.json"),
+            Path::new("/tmp/amux/bin/amux"),
+        )
+        .unwrap();
+        let mut installed = template.clone();
+        installed["hooks"]["SessionEnd"][0]["hooks"][0]["timeout"] = Value::from(5);
+
+        assert_eq!(
+            drift_document("Codex", &template, &installed),
+            vec!["Codex: timeout drift for SessionEnd"]
         );
     }
 

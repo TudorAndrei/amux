@@ -96,7 +96,7 @@
           {
             "type": "command",
             "command": "__AMUX_BIN__ event --agent codex --event SessionEnd",
-            "timeout": 5
+            "timeout": 3
           }
         ]
       }

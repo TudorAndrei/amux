@@ -2177,7 +2177,18 @@ fn tmux_plugin_loads_native_picker_without_status_wiring() {
             .stdout,
     )
     .unwrap();
-    assert!(picker.contains("bin/amux picker"));
+    assert!(
+        picker.contains("bin/amux"),
+        "unexpected picker binding: {picker}"
+    );
+    assert!(
+        picker.contains("run-shell"),
+        "unexpected picker binding: {picker}"
+    );
+    assert!(
+        picker.contains("AMUX_TMUX_CLIENT=#{client_tty}"),
+        "unexpected picker binding: {picker}"
+    );
     assert!(picker.contains("bin/amux next-attention"));
     let status_option = tmux_command(&tmux_tmpdir)
         .args([

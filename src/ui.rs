@@ -4,11 +4,16 @@ use crate::sessions;
 use crate::state;
 use nucleo::Nucleo;
 use nucleo::pattern::{CaseMatching, Normalization};
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::{
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
+    execute,
+    style::{Attribute, ResetColor, SetAttribute},
+};
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
+use std::io;
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
@@ -51,10 +56,18 @@ pub fn run(config: Config) -> Result<(), String> {
     run_native(config)
 }
 
+fn restore_terminal() {
+    ratatui::restore();
+    // Leaving the alternate screen does not reset SGR attributes. Without
+    // this, the picker can leak its final foreground/background and emphasis
+    // attributes into Codex.
+    let _ = execute!(io::stdout(), SetAttribute(Attribute::Reset), ResetColor);
+}
+
 fn run_native(config: Config) -> Result<(), String> {
     let (updates, initial) = updates(config.clone());
     let mut app = App::new(initial);
-    let _terminal_guard = RestoreGuard::new(ratatui::restore);
+    let _terminal_guard = RestoreGuard::new(restore_terminal);
     let mut terminal = ratatui::init();
     let outcome = loop {
         apply_updates(&mut app, &updates);

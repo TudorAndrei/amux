@@ -23,10 +23,11 @@ if [ "$amux_key" != "A" ]; then
 	*"$CURRENT_DIR/bin/amux picker"* | *"$CURRENT_DIR/scripts/picker.sh"*) tmux unbind-key A ;;
 	esac
 fi
-# tmux does not expand formats in `display-popup -e`; the picker resolves its
-# invoking client directly.
-tmux bind-key "$amux_key" display-popup \
-	-w "$popup_width" -h "$popup_height" -E "$CURRENT_DIR/bin/amux picker"
+# `display-popup -e` passes formats through literally. `run-shell` expands
+# formats in the keypress client's context, so capture its TTY before opening
+# the popup and give the picker an unambiguous `switch-client -c` target.
+tmux bind-key "$amux_key" run-shell \
+	"tmux display-popup -w '$popup_width' -h '$popup_height' -E 'AMUX_TMUX_CLIENT=#{client_tty} exec \"$CURRENT_DIR/bin/amux\" picker'"
 
 next_key="$(tmux show-option -gqv @amux-next-attention-key)"
 if [ -n "$next_key" ]; then
