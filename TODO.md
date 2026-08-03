@@ -98,13 +98,13 @@
 
 ## Phase 10: Harden workflow dependencies and release gating
 
-- [ ] Pin every `uses:` entry to a verified full commit SHA with tag comments.
-- [ ] Add scheduled GitHub Actions updates in `.github/dependabot.yml`.
-- [ ] Emit whether Cocogitto created a new release commit/tag.
-- [ ] Gate release push, packaging, and publication on that result.
-- [ ] Keep all three check jobs on every push.
-- [ ] Verify actionlint, immutable pins, releasing flow, and docs-only flow.
-- [ ] Commit: `ci(release): pin actions and skip no-op packaging`
+- [x] Pin every `uses:` entry to a verified full commit SHA with tag comments.
+- [x] Add scheduled GitHub Actions updates in `.github/dependabot.yml`.
+- [x] Emit whether Cocogitto created a new release commit/tag.
+- [x] Gate release push, packaging, and publication on that result.
+- [x] Keep all three check jobs on every push.
+- [x] Verify actionlint, immutable pins, releasing flow, and docs-only flow.
+- [x] Commit: `ci(release): pin actions and skip no-op packaging`
 
 ## Phase 11: Define licensing and generate complete notices
 
