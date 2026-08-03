@@ -2,6 +2,31 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.5.0](https://github.com/TudorAndrei/amux/compare/27fa3e7a8188a6d2d5eacd7432ef3e310f034351..v0.5.0) - 2026-08-03
+#### Features
+- (**cli**) stream live session revisions as json - ([b71d012](https://github.com/TudorAndrei/amux/commit/b71d01245ab7e2e39f3bca9728a17beee3dd18f2)) - TudorAndrei
+- (**cli**) expose retained event history - ([7b80c6a](https://github.com/TudorAndrei/amux/commit/7b80c6a9deeddfc117e1dfc13f5316e012922683)) - TudorAndrei
+- (**integrations**) improve pi and opencode lifecycle fidelity - ([e77a24e](https://github.com/TudorAndrei/amux/commit/e77a24eb3beb662e7f8f1daba310e906480084a1)) - TudorAndrei
+#### Bug Fixes
+- (**daemon**) serialize stale socket recovery - ([81dad97](https://github.com/TudorAndrei/amux/commit/81dad97a2b46e8eaeecdd441d7e6b886fa0dc6ac)) - TudorAndrei
+- (**doctor**) verify every installed agent integration - ([bcde525](https://github.com/TudorAndrei/amux/commit/bcde525ec3c6ab9b62c0dd05d921d1af22177b11)) - TudorAndrei
+- (**event**) enforce one bounded durable intake path - ([052fe1f](https://github.com/TudorAndrei/amux/commit/052fe1f9493f854dde4cf2aea7bb14cbdafdfce2)) - TudorAndrei
+- (**state**) coordinate and recover event log maintenance - ([48ba71e](https://github.com/TudorAndrei/amux/commit/48ba71e223e368e09b65c7249692ad3cf2639190)) - TudorAndrei
+- (**storage**) preserve durable state and hook backups - ([de58ec2](https://github.com/TudorAndrei/amux/commit/de58ec28af6733cc304f178d25efafbeef906c7d)) - TudorAndrei
+#### Documentation
+- (**integrations**) record lifecycle capability matrix - ([c337969](https://github.com/TudorAndrei/amux/commit/c3379696a5a961bb7e21b1a0d65b823f47a22338)) - TudorAndrei
+- (**license**) define terms and generate dependency notices - ([a51e6b3](https://github.com/TudorAndrei/amux/commit/a51e6b3395d3e8a0a505dcecdde8971a8aa02bdc)) - TudorAndrei
+- (**roadmap**) record completed hardening plan - ([46b6bf7](https://github.com/TudorAndrei/amux/commit/46b6bf7b985c73fc5b386e031f95fca3af33a064)) - TudorAndrei
+#### Continuous Integration
+- (**release**) pin actions and skip no-op packaging - ([08e9197](https://github.com/TudorAndrei/amux/commit/08e9197c0217efc08c16abb7c3eb91046a3a7b0c)) - TudorAndrei
+#### Refactoring
+- (**cli**) make the library the canonical module graph - ([27fa3e7](https://github.com/TudorAndrei/amux/commit/27fa3e7a8188a6d2d5eacd7432ef3e310f034351)) - TudorAndrei
+- (**daemon**) concentrate live model invariants - ([7ca8bd2](https://github.com/TudorAndrei/amux/commit/7ca8bd2aebb66323c4817d63068470f329039e10)) - TudorAndrei
+- (**events**) centralize agent lifecycle policy - ([1a10e5c](https://github.com/TudorAndrei/amux/commit/1a10e5cbe9d7e77b169814a86addb5e2b08e5c02)) - TudorAndrei
+- (**ipc**) own framing and response validation - ([6744ed1](https://github.com/TudorAndrei/amux/commit/6744ed194fb302c41dd75e8da961c06a15c0ff31)) - TudorAndrei
+
+- - -
+
 ## [v0.4.2](https://github.com/TudorAndrei/amux/compare/c1cde2180f954d21d23bfdf9734a55aa832abe6c..v0.4.2) - 2026-07-30
 #### Bug Fixes
 - (**claude**) distinguish completion notifications from attention - ([4295c01](https://github.com/TudorAndrei/amux/commit/4295c0171bc4a51afad346411a16547b9f44523d)) - TudorAndrei
