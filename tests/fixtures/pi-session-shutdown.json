@@ -1,0 +1,9 @@
+{
+  "type": "session_shutdown",
+  "session_id": "pi-session-1",
+  "cwd": "/tmp/amux-pi",
+  "event": {
+    "type": "session_shutdown",
+    "reason": "quit"
+  }
+}

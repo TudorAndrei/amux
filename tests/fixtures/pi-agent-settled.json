@@ -1,0 +1,8 @@
+{
+  "type": "agent_settled",
+  "session_id": "pi-session-1",
+  "cwd": "/tmp/amux-pi",
+  "event": {
+    "type": "agent_settled"
+  }
+}

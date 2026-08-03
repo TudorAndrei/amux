@@ -1,0 +1,10 @@
+{
+  "event": {
+    "type": "session.created",
+    "properties": {
+      "sessionID": "opencode-session-1"
+    }
+  },
+  "directory": "/tmp/amux-opencode",
+  "worktree": "/tmp/amux-opencode"
+}

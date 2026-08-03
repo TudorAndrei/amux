@@ -140,12 +140,12 @@
 
 ## Phase 14: Record Pi and opencode lifecycle capabilities
 
-- [ ] Read current primary Pi and opencode hook documentation.
-- [ ] Capture representative lifecycle fixtures.
-- [ ] Add the four-adapter capability matrix to `docs/events.md`.
-- [ ] Record unsupported/unstable signals without inferred timers.
-- [ ] Decide whether confirmed signals unblock Phase 15.
-- [ ] Commit: `docs(integrations): record lifecycle capability matrix`
+- [x] Read current primary Pi and opencode hook documentation.
+- [x] Capture representative lifecycle fixtures.
+- [x] Add the four-adapter capability matrix to `docs/events.md`.
+- [x] Record unsupported/unstable signals without inferred timers.
+- [x] Decide whether confirmed signals unblock Phase 15.
+- [x] Commit: `docs(integrations): record lifecycle capability matrix`
 
 ## Phase 15: Improve supported Pi and opencode lifecycle fidelity
 

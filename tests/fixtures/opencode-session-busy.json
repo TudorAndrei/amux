@@ -1,0 +1,13 @@
+{
+  "event": {
+    "type": "session.status",
+    "properties": {
+      "sessionID": "opencode-session-1",
+      "status": {
+        "type": "busy"
+      }
+    }
+  },
+  "directory": "/tmp/amux-opencode",
+  "worktree": "/tmp/amux-opencode"
+}

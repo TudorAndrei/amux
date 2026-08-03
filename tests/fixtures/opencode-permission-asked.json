@@ -1,0 +1,12 @@
+{
+  "event": {
+    "type": "permission.asked",
+    "properties": {
+      "id": "per_01",
+      "sessionID": "opencode-session-1",
+      "permission": "bash"
+    }
+  },
+  "directory": "/tmp/amux-opencode",
+  "worktree": "/tmp/amux-opencode"
+}

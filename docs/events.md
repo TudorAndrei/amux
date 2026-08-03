@@ -96,18 +96,78 @@ Unknown events from any adapter are treated conservatively as non-terminal
 activity (`running`, without attention) unless their stable event name matches
 the generic permission/input, completion, or session-end rules.
 
+## Adapter capability matrix
+
+This matrix separates events that the adapters can observe from states amux
+cannot determine reliably. It was checked against the current Pi and opencode
+primary documentation and source on 2026-08-03. A dash means that the upstream
+adapter exposes no stable signal amux can use; amux does not replace missing
+signals with timers or polling.
+
+| Adapter | Start | Activity | Attention | Completion | End |
+| --- | --- | --- | --- | --- | --- |
+| Codex | yes | yes | permission | yes | yes |
+| Claude | yes | yes | permission/input | yes | no |
+| Pi | yes | yes | no | yes | yes |
+| opencode | yes | yes | permission | yes | deletion only |
+
+The exact signals behind the matrix are:
+
+- Codex: `SessionStart`; `UserPromptSubmit`, `PreToolUse`, `PostToolUse`,
+  `PreCompact`, and `PostCompact`; `PermissionRequest`; `Stop`; and
+  `SessionEnd`.
+- Claude: `SessionStart`; `UserPromptSubmit`; `Notification` with
+  `permission_prompt` or `agent_needs_input`; and `Stop` or `Notification`
+  with `idle_prompt` or `agent_completed`. The installed adapter has no
+  session-end signal.
+- Pi: `session_start`; `agent_start`; no attention signal; `agent_settled`;
+  and `session_shutdown`.
+- opencode: `session.created`; `session.status` with `busy` or `retry`;
+  `permission.asked`; `session.status` with `idle`; and `session.deleted` for
+  explicit deletion only. `question.asked` is unstable, deprecated
+  `session.idle` duplicates idle status, and normal close is unsupported.
+
+Pi's documented `agent_settled` fires only after the run has no automatic
+retry, compaction, or queued continuation left, making it a stronger completion
+boundary than `agent_end`. `session_shutdown` covers quit, reload, and session
+replacement. Pi also exposes `tool_call` and an `input` event, but `tool_call`
+is an extension interception point and `input` means user input was received;
+neither reports that Pi itself is waiting for a permission or answer. That
+attention capability therefore remains unsupported.
+
+opencode's documented `session.idle` event is a deprecated compatibility
+completion notification, not a permission request. `session.status` reports
+the authoritative `busy`, `retry`, and `idle` states. The documented
+`permission.asked` and `permission.replied` pair carries a session id. Although
+the runtime also forwards `question.asked`, that event is absent from the
+public plugin event list and typed plugin event union, so amux records it as
+unstable and does not use it. `session.deleted` accurately ends a deleted
+session but does not report a normal TUI or process close. The current runtime
+forwards event data to legacy plugins under `event.properties`; adapters must
+not infer lifecycle state from undocumented payload fields.
+
+These confirmed signals unblock Phase 15 for both adapters: Pi can gain exact
+activity, completion, and shutdown transitions while retaining its documented
+attention limitation; opencode can gain exact start, activity, idle,
+permission, and deletion transitions while retaining its normal-close and
+question-input limitations. Unknown future events remain conservative
+activity.
+
+Primary references are pinned to the inspected [Pi revision][pi-revision] and
+[opencode revision][opencode-revision]. The exact documentation, type, schema,
+runtime publisher, and compatibility-bridge links are recorded in
+`docs/integration-capability-research.md`.
+
+[pi-revision]: https://github.com/earendil-works/pi/tree/ebf33c0c
+[opencode-revision]: https://github.com/anomalyco/opencode/tree/89130db6
+
 ## opencode
 
-The global plugin records all opencode events it receives. `session.idle` is
-treated as `attention` because it is the closest current plugin signal for "the
-agent is ready for the user to look".
-
-The plugin is installed into `~/.config/opencode/plugins/amux.js`.
+The global plugin is installed into `~/.config/opencode/plugins/amux.js`. The
+matrix above defines the confirmed lifecycle mapping for Phase 15.
 
 ## Pi
 
-The Pi extension records `session_start`, which maps to `running`. Pi attention
-support is best-effort until a stronger approval or idle event is exposed.
-
-The extension is installed into `~/.pi/agent/extensions/amux.ts` and registered
-in `~/.pi/agent/settings.json`.
+The Pi extension is installed into `~/.pi/agent/extensions/amux.ts` and
+registered in `~/.pi/agent/settings.json`. The matrix above defines the
+confirmed lifecycle mapping for Phase 15.
