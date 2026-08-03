@@ -11,8 +11,9 @@ update is not a single atomic event:
 - **Plugin checkout** — `~/.tmux/plugins/amux`, updated by TPM (`prefix + U`).
 - **Native binary** — `bin/amux-rs` in that checkout, replaced automatically by
   `scripts/ensure-runtime.sh`.
-- **Agent hooks** — `~/.codex/hooks.json` and `~/.claude/settings.json`,
-  rewritten only when **you** run `amux install-hooks --write`.
+- **Agent integrations** — Codex and Claude hook JSON, the Pi extension and
+  registration, and the opencode plugin. They are rewritten only when **you**
+  run `amux install-hooks --write`.
 
 The daemon is a fourth moving part: a long-lived process started lazily from
 whichever binary was current at the time.
@@ -46,16 +47,23 @@ amux doctor
 reports each difference and names the remedy:
 
 ```text
-hooks: Codex: missing amux hook for PreToolUse; run `amux install-hooks --write`
-hooks: Codex: matcher drift for SessionStart; run `amux install-hooks --write`
-hooks: Claude: launcher quoting drift for Stop; run `amux install-hooks --write`
+hooks Codex: missing amux hook for PreToolUse; run `amux install-hooks --write`
+hooks Claude: current
+hooks Pi: installed text is stale; run `amux install-hooks --write`
+hooks opencode: current
 ```
 
-Drift is reported in three flavours, so the message says what actually differs:
-a **missing** hook for an event the template ships, **matcher drift** when the
-event is installed with different matching, and **launcher quoting drift** when
-only the path quoting changed. A launcher at a different absolute path is never
-drift — source, TPM, and release-archive installs all live somewhere different.
+Codex and Claude drift names a **missing** hook, **matcher drift**, **argument
+drift**, or **launcher quoting drift**. Pi and opencode text assets are compared
+with the shipped files, and Pi's settings must still register the installed
+extension. Settings and JSON hooks owned by other tools are ignored.
+
+Each integration gets its own `current`, drift, or `unverified` result. An
+invalid or unreadable settings file is unverified rather than silently called
+current. Only the launcher value in the text assets is normalized, and only
+when it is an absolute `bin/amux` path. The canonical TPM launcher
+`~/.tmux/plugins/amux/bin/amux`, a source checkout, and a release archive are
+therefore equivalent; any other text edit remains visible as drift.
 
 Then:
 

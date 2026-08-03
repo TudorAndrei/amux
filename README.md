@@ -164,7 +164,7 @@ session end. Its `SessionStart` matcher is `startup|resume|clear`; compaction is
 tracked by dedicated hooks instead. `Stop` is turn-scoped: a tool-less next
 turn can briefly remain `done` because Codex provides no turn-start hook. Re-run
 `bin/amux install-hooks --write` after upgrading; `bin/amux doctor` reports
-installed Codex and Claude hook drift.
+separate Codex, Claude, Pi, and opencode integration results.
 
 The Rust installer writes timestamped backups before replacing existing global
 config files. Hook assets live under `hooks/` and are rendered with the absolute

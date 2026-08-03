@@ -43,16 +43,36 @@ pub fn uninstall(mode: Mode) -> Result<(), String> {
     uninstall_at(&Paths::from_env()?, mode)
 }
 
-/// Describe differences between the installed JSON-merged hooks and the
-/// templates shipped by this checkout. Text-template integrations deliberately
-/// are not included: they have no safe merge boundary to inspect.
+#[derive(Debug, PartialEq, Eq)]
+pub struct IntegrationReport {
+    pub name: &'static str,
+    pub result: Result<Vec<String>, String>,
+}
+
+/// Inspect every supported integration independently so callers can distinguish
+/// a current installation from drift and from a configuration that could not be
+/// verified.
+pub fn inspect() -> Result<Vec<IntegrationReport>, String> {
+    Ok(inspect_at(&Paths::from_env()?))
+}
+
+/// Describe every known difference across the four installed integrations.
 pub fn drift() -> Result<Vec<String>, String> {
     drift_at(&Paths::from_env()?)
 }
 
 fn drift_at(paths: &Paths) -> Result<Vec<String>, String> {
+    inspect_at(paths)
+        .into_iter()
+        .try_fold(Vec::new(), |mut output, report| {
+            output.extend(report.result?);
+            Ok(output)
+        })
+}
+
+fn inspect_at(paths: &Paths) -> Vec<IntegrationReport> {
     let launcher = paths.launcher();
-    let integrations = [
+    let json_integrations = [
         (
             "Codex",
             paths.home.join(".codex/hooks.json"),
@@ -64,13 +84,106 @@ fn drift_at(paths: &Paths) -> Result<Vec<String>, String> {
             paths.root.join("hooks/claude/settings.fragment.json"),
         ),
     ];
-    let mut output = Vec::new();
-    for (name, installed_path, template_path) in integrations {
-        let template = template_json(&template_path, &launcher)?;
-        let installed = read_json(&installed_path)?;
-        output.extend(drift_document(name, &template, &installed));
+    let mut reports = Vec::new();
+    for (name, installed_path, template_path) in json_integrations {
+        let result = template_json(&template_path, &launcher).and_then(|template| {
+            read_json(&installed_path).map(|installed| drift_document(name, &template, &installed))
+        });
+        reports.push(IntegrationReport { name, result });
     }
-    Ok(output)
+
+    let pi_extension = paths.home.join(".pi/agent/extensions/amux.ts");
+    let pi_settings = paths.home.join(".pi/agent/settings.json");
+    let pi_result = drift_text_asset(
+        "Pi",
+        &paths.root.join("hooks/pi/amux.ts"),
+        &pi_extension,
+        &launcher,
+    )
+    .and_then(|mut drifts| {
+        let settings = read_json(&pi_settings)?;
+        let registered = settings
+            .get("extensions")
+            .and_then(Value::as_array)
+            .is_some_and(|extensions| {
+                extensions
+                    .iter()
+                    .any(|value| value.as_str() == Some(pi_extension.to_string_lossy().as_ref()))
+            });
+        if !registered {
+            drifts.push("Pi: extension is not registered in settings".to_owned());
+        }
+        Ok(drifts)
+    });
+    reports.push(IntegrationReport {
+        name: "Pi",
+        result: pi_result,
+    });
+
+    reports.push(IntegrationReport {
+        name: "opencode",
+        result: drift_text_asset(
+            "opencode",
+            &paths.root.join("hooks/opencode/amux.js"),
+            &paths.home.join(".config/opencode/plugins/amux.js"),
+            &launcher,
+        ),
+    });
+    reports
+}
+
+fn drift_text_asset(
+    name: &str,
+    template_path: &Path,
+    installed_path: &Path,
+    launcher: &Path,
+) -> Result<Vec<String>, String> {
+    let expected = template_text(template_path, launcher)?;
+    let installed = match fs::read_to_string(installed_path) {
+        Ok(installed) => installed,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(vec![format!("{name}: installed asset is missing")]);
+        }
+        Err(error) => {
+            return Err(format!("cannot read {}: {error}", installed_path.display()));
+        }
+    };
+    if normalize_text_launcher(&expected) == normalize_text_launcher(&installed) {
+        Ok(Vec::new())
+    } else {
+        Ok(vec![format!("{name}: installed text is stale")])
+    }
+}
+
+fn normalize_text_launcher(text: &str) -> String {
+    const PREFIX: &str = "const AMUX_BIN = ";
+    text.split_inclusive('\n')
+        .map(|segment| {
+            let (line, newline) = segment
+                .strip_suffix('\n')
+                .map_or((segment, ""), |line| (line, "\n"));
+            let Some(encoded) = line.strip_prefix(PREFIX) else {
+                return segment.to_owned();
+            };
+            let Ok(path) = serde_json::from_str::<String>(encoded) else {
+                return segment.to_owned();
+            };
+            if is_valid_launcher_path(Path::new(&path)) {
+                format!(r#"{PREFIX}"__AMUX_BIN__"{newline}"#)
+            } else {
+                segment.to_owned()
+            }
+        })
+        .collect()
+}
+
+fn is_valid_launcher_path(path: &Path) -> bool {
+    path.is_absolute()
+        && path.file_name().is_some_and(|name| name == "amux")
+        && path
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|name| name == "bin")
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -935,6 +1048,80 @@ mod tests {
             drift
                 .iter()
                 .any(|line| line.contains("matcher drift for SessionStart"))
+        );
+        fs::remove_dir_all(paths.home).unwrap();
+    }
+
+    #[test]
+    fn drift_compares_text_assets_but_accepts_any_absolute_launcher() {
+        let paths = paths();
+        install_at(&paths, Mode::Write).unwrap();
+        let pi = paths.home.join(".pi/agent/extensions/amux.ts");
+        let opencode = paths.home.join(".config/opencode/plugins/amux.js");
+
+        for asset in [&pi, &opencode] {
+            let installed = fs::read_to_string(asset).unwrap();
+            let launcher = paths.launcher().to_string_lossy().into_owned();
+            fs::write(
+                asset,
+                installed.replace(&launcher, "/Users/example/.tmux/plugins/amux/bin/amux"),
+            )
+            .unwrap();
+        }
+        assert!(drift_at(&paths).unwrap().is_empty());
+
+        fs::write(
+            &pi,
+            format!("{}// stale\n", fs::read_to_string(&pi).unwrap()),
+        )
+        .unwrap();
+        let opencode_text = fs::read_to_string(&opencode)
+            .unwrap()
+            .replace("export default AmuxPlugin", "export default OtherPlugin");
+        fs::write(&opencode, opencode_text).unwrap();
+        let drift = drift_at(&paths).unwrap();
+        assert!(
+            drift
+                .iter()
+                .any(|line| line == "Pi: installed text is stale")
+        );
+        assert!(
+            drift
+                .iter()
+                .any(|line| line == "opencode: installed text is stale")
+        );
+        fs::remove_dir_all(paths.home).unwrap();
+    }
+
+    #[test]
+    fn drift_checks_pi_registration_and_ignores_foreign_settings() {
+        let paths = paths();
+        install_at(&paths, Mode::Write).unwrap();
+        let settings_path = paths.home.join(".pi/agent/settings.json");
+        let mut settings = read_json(&settings_path).unwrap();
+        settings["theme"] = Value::String("user-choice".to_owned());
+        settings["extensions"]
+            .as_array_mut()
+            .unwrap()
+            .push(Value::String("/user/foreign-extension.ts".to_owned()));
+        write_json(&settings_path, &settings, "test", Mode::Write).unwrap();
+        assert!(drift_at(&paths).unwrap().is_empty());
+
+        let expected = paths
+            .home
+            .join(".pi/agent/extensions/amux.ts")
+            .to_string_lossy()
+            .into_owned();
+        settings["extensions"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|value| value.as_str() != Some(&expected));
+        write_json(&settings_path, &settings, "test", Mode::Write).unwrap();
+        assert!(
+            drift_at(&paths)
+                .unwrap()
+                .iter()
+                .any(|line| line == "Pi: extension is not registered in settings")
         );
         fs::remove_dir_all(paths.home).unwrap();
     }

@@ -212,9 +212,18 @@ fn tmux_command(socket_dir: &Path) -> Command {
 #[test]
 fn cli_clear_doctor_and_option_contracts_are_preserved() {
     let state = temp_dir("cli-contract");
+    let home = temp_dir("cli-home");
     let fake_bin = temp_dir("cli-tmux");
     fake_tmux(&fake_bin);
     let path = format!("{}:{}", fake_bin.display(), std::env::var("PATH").unwrap());
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let installed = amux(&state)
+        .env("HOME", &home)
+        .env("AMUX_ROOT", root)
+        .args(["install-hooks", "--write"])
+        .output()
+        .unwrap();
+    assert!(installed.status.success());
     event(
         &state,
         "codex",
@@ -228,6 +237,8 @@ fn cli_clear_doctor_and_option_contracts_are_preserved() {
     assert!(listed["records"].get("codex:clear-me").is_some());
     let doctor = amux(&state)
         .env("PATH", &path)
+        .env("HOME", &home)
+        .env("AMUX_ROOT", root)
         .arg("doctor")
         .output()
         .unwrap();
@@ -236,6 +247,9 @@ fn cli_clear_doctor_and_option_contracts_are_preserved() {
     assert!(doctor.contains("tmux: ok (tmux 3.5)"));
     assert!(doctor.contains("state: v1 compatible"));
     assert!(doctor.contains("maintenance: ok"));
+    for integration in ["Codex", "Claude", "Pi", "opencode"] {
+        assert!(doctor.contains(&format!("hooks {integration}: current")));
+    }
     fs::write(
         state.join("maintenance.error"),
         "injected compaction failure\n",

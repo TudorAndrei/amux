@@ -87,14 +87,14 @@
 
 ## Phase 9: Report drift for every installed integration
 
-- [ ] Compare rendered Pi and opencode text assets in `hooks::drift_at`.
-- [ ] Normalize launcher assignments without treating TPM paths as drift.
-- [ ] Verify Pi settings registration.
-- [ ] Print honest per-integration doctor results.
-- [ ] Test stale text, launcher-only differences, missing Pi registration, and
+- [x] Compare rendered Pi and opencode text assets in `hooks::drift_at`.
+- [x] Normalize launcher assignments without treating TPM paths as drift.
+- [x] Verify Pi settings registration.
+- [x] Print honest per-integration doctor results.
+- [x] Test stale text, launcher-only differences, missing Pi registration, and
   all-four-current output.
-- [ ] Update `docs/updating.md`.
-- [ ] Commit: `fix(doctor): verify every installed agent integration`
+- [x] Update `docs/updating.md`.
+- [x] Commit: `fix(doctor): verify every installed agent integration`
 
 ## Phase 10: Harden workflow dependencies and release gating
 

@@ -261,14 +261,25 @@ fn cmd_doctor(config: &Config) -> i32 {
         println!("daemon socket: not running");
         println!("monitor: unavailable until a daemon is started");
     }
-    match hooks::drift() {
-        Ok(drifts) if drifts.is_empty() => println!("hooks: installed templates match"),
-        Ok(drifts) => {
-            for drift in drifts {
-                println!("hooks: {drift}; run `amux install-hooks --write`");
+    match hooks::inspect() {
+        Ok(reports) => {
+            for report in reports {
+                match report.result {
+                    Ok(drifts) if drifts.is_empty() => {
+                        println!("hooks {}: current", report.name);
+                    }
+                    Ok(drifts) => {
+                        for drift in drifts {
+                            println!("hooks {drift}; run `amux install-hooks --write`");
+                        }
+                    }
+                    Err(error) => {
+                        println!("hooks {}: unverified ({error})", report.name);
+                    }
+                }
             }
         }
-        Err(error) => println!("hooks: could not inspect installed hooks ({error})"),
+        Err(error) => println!("hooks: could not resolve integration paths ({error})"),
     }
     if failure { 1 } else { 0 }
 }
