@@ -4,9 +4,9 @@ use crate::ipc::{HookRequest, Request, Response};
 use crate::model::{SessionView, State};
 use crate::state;
 use std::collections::BTreeSet;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -46,6 +46,46 @@ pub fn socket_path(config: &Config) -> PathBuf {
     config.state_dir.join("amux.sock")
 }
 
+/// Owns the fresh file description carrying the daemon startup claim. The
+/// kernel releases the claim when this value is dropped; the stable claim file
+/// itself is deliberately never removed.
+struct StartupClaim {
+    _file: File,
+}
+
+fn acquire_startup_claim(config: &Config) -> Result<StartupClaim, String> {
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .mode(0o600)
+        .open(config.daemon_startup_claim_file())
+        .map_err(|error| error.to_string())?;
+    file.lock().map_err(|error| error.to_string())?;
+    Ok(StartupClaim { _file: file })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SocketIdentity {
+    device: u64,
+    inode: u64,
+}
+
+fn socket_identity(path: &std::path::Path) -> Result<SocketIdentity, String> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+    Ok(SocketIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    })
+}
+
+fn remove_owned_socket(path: &std::path::Path, owned: SocketIdentity) {
+    if socket_identity(path).ok() == Some(owned) {
+        let _ = fs::remove_file(path);
+    }
+}
+
 #[derive(Clone)]
 struct Shared {
     revision: u64,
@@ -60,29 +100,32 @@ struct Shared {
 
 pub fn run(config: Config) -> Result<(), String> {
     state::ensure_private_dir(&config)?;
+    let startup_claim = acquire_startup_claim(&config)?;
+    let path = socket_path(&config);
+    // This check must happen after acquiring the startup claim: a waiting
+    // starter may have observed a stale path before the winner completed bind.
+    if UnixStream::connect(&path).is_ok() {
+        return Err(format!("daemon already running ({})", path.display()));
+    }
+    if path.exists() {
+        let metadata = fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
+        if !metadata.file_type().is_socket() {
+            return Err(format!(
+                "refusing to replace non-socket path {}",
+                path.display()
+            ));
+        }
+        fs::remove_file(&path).map_err(|error| error.to_string())?;
+    }
     state::adopt_orphaned_log(&config)?;
     let mut state = state::load(&config)?;
     state::compact_events(&config, &state.records.keys().cloned().collect())?;
     state = state::load(&config)?;
-    let path = socket_path(&config);
-    if path.exists() {
-        match UnixStream::connect(&path) {
-            Ok(_) => return Err(format!("daemon already running ({})", path.display())),
-            Err(_) => {
-                let metadata = fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
-                if !metadata.file_type().is_socket() {
-                    return Err(format!(
-                        "refusing to replace non-socket path {}",
-                        path.display()
-                    ));
-                }
-                fs::remove_file(&path).map_err(|error| error.to_string())?;
-            }
-        }
-    }
     let listener = UnixListener::bind(&path).map_err(|error| error.to_string())?;
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
         .map_err(|error| error.to_string())?;
+    let owned_socket = socket_identity(&path)?;
+    drop(startup_claim);
     let topology = crate::tmux::Topology::default();
     let views = crate::sessions::views_with_topology(&config, &state, &topology);
     let shared = Arc::new(Mutex::new(Shared {
@@ -157,7 +200,7 @@ pub fn run(config: Config) -> Result<(), String> {
     {
         stop.store(true, Ordering::Relaxed);
     }
-    let _ = fs::remove_file(path);
+    remove_owned_socket(&path, owned_socket);
     Ok(())
 }
 

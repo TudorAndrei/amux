@@ -523,6 +523,63 @@ fn daemon_adopts_an_orphaned_event_log_before_compacting() {
 }
 
 #[test]
+#[cfg(unix)]
+fn concurrent_starters_serialize_stale_socket_recovery() {
+    let state = temp_dir("daemon-starters");
+    let socket = state.join("amux.sock");
+    // Dropping a bound Unix listener leaves a real stale socket inode behind.
+    drop(std::os::unix::net::UnixListener::bind(&socket).unwrap());
+    assert!(socket.exists());
+
+    let start = || {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_amux-rs"));
+        command
+            .arg("daemon")
+            .env("AMUX_STATE_DIR", &state)
+            .env_remove("TMUX")
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        command.spawn().unwrap()
+    };
+    let mut first = start();
+    let mut second = start();
+
+    let response = daemon_request(&state, r#"{"kind":"ping"}"#);
+    assert_eq!(response["revision"], 0);
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let loser = loop {
+        if let Some(status) = first.try_wait().unwrap() {
+            assert!(!status.success());
+            break 1;
+        }
+        if let Some(status) = second.try_wait().unwrap() {
+            assert!(!status.success());
+            break 2;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "both daemon starters stayed alive"
+        );
+        thread::sleep(Duration::from_millis(20));
+    };
+
+    // The losing starter has completed all cleanup; the winner must remain
+    // reachable and its live listener must still occupy the socket path.
+    assert_eq!(daemon_request(&state, r#"{"kind":"ping"}"#)["revision"], 0);
+    assert!(socket.exists());
+    assert_eq!(
+        daemon_request(&state, r#"{"kind":"shutdown"}"#)["error"],
+        Value::Null
+    );
+
+    let winner = if loser == 1 { &mut second } else { &mut first };
+    assert!(winner.wait().unwrap().success());
+    assert!(!socket.exists());
+    fs::remove_dir_all(state).unwrap();
+}
+
+#[test]
 fn fixture_normalization_uses_the_v1_schema() {
     let state = temp_dir("fixtures");
     event(&state, "codex", &[], fixture("codex-permission.json"));

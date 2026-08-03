@@ -22,12 +22,12 @@
 
 ## Phase 3: Give daemon startup one owner
 
-- [ ] Add the daemon-startup claim path to `Config`.
-- [ ] Hold an advisory claim across stale-socket recovery and bind.
-- [ ] Recheck daemon liveness after claim acquisition.
-- [ ] Add a two-starter stale-socket regression test.
-- [ ] Verify one reachable daemon and no unlinked live listener remain.
-- [ ] Commit: `fix(daemon): serialize stale socket recovery`
+- [x] Add the daemon-startup claim path to `Config`.
+- [x] Hold an advisory claim across stale-socket recovery and bind.
+- [x] Recheck daemon liveness after claim acquisition.
+- [x] Add a two-starter stale-socket regression test.
+- [x] Verify one reachable daemon and no unlinked live listener remain.
+- [x] Commit: `fix(daemon): serialize stale socket recovery`
 
 ## Phase 4: Deepen the daemon live model
 

@@ -94,6 +94,9 @@ impl Config {
     pub fn lock_file(&self) -> PathBuf {
         self.state_dir.join("state.lock")
     }
+    pub fn daemon_startup_claim_file(&self) -> PathBuf {
+        self.state_dir.join("daemon-startup.lock")
+    }
     pub fn compacting_events_file(&self) -> PathBuf {
         self.state_dir.join("events.jsonl.compacting")
     }
