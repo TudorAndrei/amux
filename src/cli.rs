@@ -3,7 +3,7 @@ use crate::{daemon, event, hooks, intake, ipc, model, render, sessions, state, t
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use std::env;
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 #[cfg(unix)]
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::process::{Command, ExitCode, Stdio};
@@ -35,6 +35,8 @@ enum Commands {
     },
     /// Print retained lifecycle transitions.
     Events(EventsArgs),
+    /// Stream live session revisions.
+    Watch(WatchArgs),
     /// Remove amux state and its event log.
     Clear,
     /// Open the native amux picker.
@@ -97,6 +99,13 @@ struct EventsArgs {
     limit: usize,
     /// Emit a versioned JSON object instead of tab-separated text.
     #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct WatchArgs {
+    /// Emit one newline-delimited JSON object per revision.
+    #[arg(long, required = true)]
     json: bool,
 }
 
@@ -197,6 +206,39 @@ fn send_after_start(config: &Config, request: ipc::HookRequest) -> Result<bool, 
         }
     }
     Ok(false)
+}
+
+fn watch_subscription(
+    config: &Config,
+) -> Result<std::sync::mpsc::Receiver<Result<ipc::SubscriptionUpdate, ipc::ClientError>>, String> {
+    match ipc::subscribe(config) {
+        Ok(receiver) => Ok(receiver),
+        Err(ipc::ClientError::Unavailable(_)) => {
+            start_daemon(config)?;
+            ipc::subscribe_with_retry(config, 20, Duration::from_millis(15))
+                .map_err(|error| error.to_string())
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn cmd_watch(config: &Config, args: WatchArgs) -> Result<(), String> {
+    debug_assert!(args.json);
+    let updates = watch_subscription(config)?;
+    let stdout = io::stdout();
+    let mut stdout = stdout.lock();
+    for update in updates {
+        let update = update.map_err(|error| error.to_string())?;
+        let mut line = serde_json::to_vec(&update).map_err(|error| error.to_string())?;
+        line.push(b'\n');
+        if let Err(error) = stdout.write_all(&line).and_then(|_| stdout.flush()) {
+            if error.kind() == io::ErrorKind::BrokenPipe {
+                return Ok(());
+            }
+            return Err(error.to_string());
+        }
+    }
+    Err("daemon subscription ended unexpectedly".to_owned())
 }
 
 fn cmd_doctor(config: &Config) -> i32 {
@@ -419,6 +461,7 @@ pub fn run() -> ExitCode {
                 Ok(0)
             })
         }
+        Commands::Watch(args) => cmd_watch(&config, args).map(|_| 0),
         Commands::Clear => match ipc::clear(&config) {
             Ok(()) => Ok(0),
             Err(ipc::ClientError::Unavailable(_)) => state::clear(&config).map(|_| 0),

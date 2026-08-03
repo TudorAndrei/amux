@@ -92,17 +92,15 @@ fn updates(config: Config) -> (Receiver<Vec<SessionView>>, Vec<SessionView>) {
         {
             return;
         }
-        for _ in 0..20 {
-            if let Ok(subscriber) = crate::ipc::subscribe(&config) {
-                for update in subscriber {
-                    let Ok(update) = update else { return };
-                    if sender.send(update.views).is_err() {
-                        return;
-                    }
+        if let Ok(subscriber) =
+            crate::ipc::subscribe_with_retry(&config, 20, Duration::from_millis(25))
+        {
+            for update in subscriber {
+                let Ok(update) = update else { return };
+                if sender.send(update.views).is_err() {
+                    return;
                 }
-                return;
             }
-            thread::sleep(Duration::from_millis(25));
         }
     });
     (receiver, Vec::new())

@@ -1400,6 +1400,154 @@ fn lazy_daemon_persists_events_and_serves_revisions() {
 
 #[test]
 #[cfg(unix)]
+fn watch_streams_initial_and_large_revisions_then_reports_disconnect() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+
+    let state = temp_dir("watch-large");
+    let listener = UnixListener::bind(state.join("amux.sock")).unwrap();
+    let missing_json = amux(&state).arg("watch").output().unwrap();
+    assert!(!missing_json.status.success());
+    assert!(
+        String::from_utf8(missing_json.stderr)
+            .unwrap()
+            .contains("--json")
+    );
+    let views = (0..700)
+        .map(|index| {
+            serde_json::json!({
+                "session": format!("session-{index}"),
+                "last_attached": index,
+                "attached": true,
+                "status": "running",
+                "attention": false,
+                "agent_count": 1,
+                "live_agent_count": 1,
+                "agents": [],
+                "pane": format!("%{index}"),
+                "reason": "large watch snapshot payload ".repeat(8),
+                "cwd": "/tmp/watch-large",
+                "updated_at": index
+            })
+        })
+        .collect::<Vec<_>>();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut request = String::new();
+        BufReader::new(stream.try_clone().unwrap())
+            .read_line(&mut request)
+            .unwrap();
+        assert_eq!(request.trim(), r#"{"kind":"subscribe"}"#);
+        for response in [
+            serde_json::json!({"revision": 0, "views": []}),
+            serde_json::json!({"revision": 1, "views": views.clone()}),
+            serde_json::json!({"revision": 2, "views": views}),
+        ] {
+            serde_json::to_writer(&mut stream, &response).unwrap();
+            stream.write_all(b"\n").unwrap();
+            stream.flush().unwrap();
+        }
+    });
+
+    let child = amux(&state)
+        .args(["watch", "--json"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Wait for the server to finish before reading stdout. This fills the
+    // process pipe with a large snapshot and exercises a temporarily slow
+    // consumer without exceeding the daemon's two-second write timeout.
+    server.join().unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(!output.status.success());
+    let lines = BufReader::new(output.stdout.as_slice())
+        .lines()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(lines.len(), 3);
+    let snapshots = lines
+        .iter()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(snapshots[0]["revision"], 0);
+    assert_eq!(snapshots[1]["revision"], 1);
+    assert_eq!(snapshots[2]["revision"], 2);
+    assert_eq!(snapshots[1]["views"].as_array().unwrap().len(), 700);
+    assert!(lines[1].len() > 64 * 1024);
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("daemon subscription disconnected"));
+    fs::remove_dir_all(state).unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn watch_lazily_starts_the_daemon_and_ctrl_c_is_quiet() {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::os::unix::process::ExitStatusExt;
+
+    let _lock = real_server_test_lock();
+    let state = temp_dir("watch-start");
+    let mut child = amux(&state)
+        .args(["watch", "--json"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut initial = String::new();
+    stdout.read_line(&mut initial).unwrap();
+    let initial: Value = serde_json::from_str(&initial).unwrap();
+    assert_eq!(initial["revision"], 0);
+    assert_eq!(initial["views"], serde_json::json!([]));
+
+    let mut hook = Command::new(env!("CARGO_BIN_EXE_amux-rs"));
+    hook.args(["event", "--agent", "codex", "--event", "PostToolUse"])
+        .env("AMUX_STATE_DIR", &state)
+        .env_remove("AMUX_NO_DAEMON")
+        .env_remove("TMUX")
+        .stdin(Stdio::piped());
+    let mut hook = hook.spawn().unwrap();
+    hook.stdin
+        .as_mut()
+        .unwrap()
+        .write_all(br#"{"session_id":"watch-session"}"#)
+        .unwrap();
+    assert!(hook.wait().unwrap().success());
+    let mut update = String::new();
+    stdout.read_line(&mut update).unwrap();
+    let update: Value = serde_json::from_str(&update).unwrap();
+    assert_eq!(update["revision"], 1);
+
+    assert!(
+        Command::new("kill")
+            .args(["-INT", &child.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let status = child.wait().unwrap();
+    assert_eq!(status.signal(), Some(2));
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    assert!(stderr.is_empty());
+    assert_eq!(
+        daemon_request(&state, r#"{"kind":"shutdown"}"#)["error"],
+        Value::Null
+    );
+    fs::remove_dir_all(state).unwrap();
+}
+
+#[test]
+#[cfg(unix)]
 fn control_monitor_reconciles_an_isolated_tmux_server() {
     let _lock = real_server_test_lock();
     use std::io::Write;

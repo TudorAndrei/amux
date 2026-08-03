@@ -130,13 +130,13 @@
 
 ## Phase 13: Add a headless live JSON stream
 
-- [ ] Add `watch --json` with one NDJSON object per revision.
-- [ ] Reuse the IPC subscription in `src/ui.rs`.
-- [ ] Define startup, disconnect, and stderr behavior.
-- [ ] Document stream framing and revision monotonicity.
-- [ ] Test initial output, revisions, large snapshots, slow consumers,
+- [x] Add `watch --json` with one NDJSON object per revision.
+- [x] Reuse the IPC subscription in `src/ui.rs`.
+- [x] Define startup, disconnect, and stderr behavior.
+- [x] Document stream framing and revision monotonicity.
+- [x] Test initial output, revisions, large snapshots, slow consumers,
   disconnect, and Ctrl-C.
-- [ ] Commit: `feat(cli): stream live session revisions as json`
+- [x] Commit: `feat(cli): stream live session revisions as json`
 
 ## Phase 14: Record Pi and opencode lifecycle capabilities
 

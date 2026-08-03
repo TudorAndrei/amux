@@ -107,6 +107,25 @@ an audit log. `AMUX_EVENTS_PER_SESSION=0` disables automatic compaction rather
 than deleting history, but `amux events` remains capped at 1,000 records per
 invocation.
 
+### Live JSON stream
+
+`amux watch --json` starts or connects to the daemon and writes one NDJSON
+object per model revision:
+
+```json
+{"revision":7,"views":[...]}
+```
+
+The first line is the daemon's current snapshot, including revision zero, and
+later lines have strictly increasing revisions. Each line is complete and
+flushed independently. Standard output contains only JSON; startup, protocol,
+and disconnect diagnostics go to standard error. Once connected, a broken
+daemon stream exits nonzero instead of falling back to state-file polling.
+Backpressure is bounded to one pending update, and the daemon disconnects a
+consumer that exceeds its two-second socket write timeout. Closing a pipeline
+is treated as a normal broken pipe; Ctrl-C terminates quietly via the Unix
+interrupt signal.
+
 Session views only surface agents associated with tmux sessions. `amux sessions`,
 the picker ignores hook records captured outside
 tmux; those records remain available through `amux list` for debugging. Session

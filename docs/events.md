@@ -36,6 +36,22 @@ History is transition-oriented, subject to compaction, and is not a complete
 audit trail. Setting `AMUX_EVENTS_PER_SESSION=0` disables automatic compaction;
 the command's 1,000-event maximum still applies.
 
+## Live revision stream
+
+`amux watch --json` uses the same IPC subscription as the native picker. It
+connects to a running daemon or starts one with the bounded startup retry, then
+emits one newline-delimited object containing `revision` and `views` for every
+published model revision. The initial line is always the current snapshot;
+subsequent revision numbers must increase strictly. A one-update channel bounds
+client-side buffering while each complete line is flushed to stdout.
+
+Stdout is reserved for NDJSON. Connection and protocol failures are written to
+stderr and exit nonzero, with no silent fallback to cached files after a stream
+has connected. A downstream broken pipe exits successfully, while Ctrl-C uses
+normal quiet Unix signal termination. Consumers that stop reading longer than
+the daemon's write timeout are disconnected rather than allowed to grow an
+unbounded queue.
+
 ## Codex
 
 - `SessionStart` (`startup|resume|clear`) -> `running`

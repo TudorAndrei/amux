@@ -108,7 +108,7 @@ impl fmt::Display for ClientError {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SubscriptionUpdate {
     pub revision: u64,
     pub views: Vec<SessionView>,
@@ -208,15 +208,32 @@ pub fn subscribe(
     subscription_stream(stream)
 }
 
+pub fn subscribe_with_retry(
+    config: &crate::config::Config,
+    attempts: usize,
+    delay: Duration,
+) -> Result<mpsc::Receiver<Result<SubscriptionUpdate, ClientError>>, ClientError> {
+    let attempts = attempts.max(1);
+    for attempt in 0..attempts {
+        match subscribe(config) {
+            Ok(receiver) => return Ok(receiver),
+            Err(ClientError::Unavailable(_)) if attempt + 1 < attempts => thread::sleep(delay),
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("at least one subscription attempt is always made")
+}
+
 fn subscription_stream(
     mut stream: UnixStream,
 ) -> Result<mpsc::Receiver<Result<SubscriptionUpdate, ClientError>>, ClientError> {
     serde_json::to_writer(&mut stream, &Request::Subscribe).map_err(protocol)?;
     stream.write_all(b"\n").map_err(protocol)?;
     stream.flush().map_err(protocol)?;
-    let (sender, receiver) = mpsc::channel();
+    let (sender, receiver) = mpsc::sync_channel(1);
     thread::spawn(move || {
         let mut reader = BufReader::new(stream);
+        let mut last_revision = None;
         loop {
             let mut line = String::new();
             let result = match reader.read_line(&mut line) {
@@ -239,6 +256,18 @@ fn subscription_stream(
                                     "subscription response omitted views".to_owned(),
                                 )
                             })
+                    })
+                    .and_then(|update| {
+                        if last_revision.is_some_and(|revision| update.revision <= revision) {
+                            Err(ClientError::Protocol(format!(
+                                "subscription revision {} did not advance past {}",
+                                update.revision,
+                                last_revision.unwrap_or_default()
+                            )))
+                        } else {
+                            last_revision = Some(update.revision);
+                            Ok(update)
+                        }
                     }),
             };
             let closed = result.is_err();
@@ -281,7 +310,7 @@ pub(crate) fn write_response(stream: &mut UnixStream, response: &Response) -> Re
 mod tests {
     use super::*;
     use crate::config::Config;
-    use crate::model::Record;
+    use crate::model::{Record, SessionView};
     use std::collections::BTreeMap;
     use std::fs;
     use std::os::unix::net::UnixListener;
@@ -443,6 +472,80 @@ mod tests {
         .unwrap();
         assert_eq!(updates.recv().unwrap().unwrap().revision, 3);
         assert_eq!(updates.recv().unwrap().unwrap().revision, 4);
+        drop(server);
+        assert!(matches!(
+            updates.recv().unwrap(),
+            Err(ClientError::Protocol(message)) if message.contains("disconnected")
+        ));
+    }
+
+    #[test]
+    fn subscription_preserves_large_updates_for_a_briefly_slow_consumer() {
+        let (client, mut server) = UnixStream::pair().unwrap();
+        server
+            .set_write_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let updates = subscription_stream(client).unwrap();
+        read_request_line(&server);
+        let views = (0..400)
+            .map(|index| SessionView {
+                session: format!("session-{index}"),
+                last_attached: index,
+                attached: true,
+                status: "running".to_owned(),
+                attention: false,
+                agent_count: 1,
+                live_agent_count: 1,
+                agents: Vec::new(),
+                pane: format!("%{index}"),
+                reason: "large subscription snapshot".repeat(4),
+                cwd: "/tmp/large-subscription-snapshot".to_owned(),
+                updated_at: index,
+            })
+            .collect::<Vec<_>>();
+        let writer = thread::spawn(move || {
+            for revision in 1..=3 {
+                write_response(
+                    &mut server,
+                    &Response::state(
+                        revision,
+                        State::initial(),
+                        Topology::default(),
+                        views.clone(),
+                    ),
+                )
+                .unwrap();
+            }
+        });
+        thread::sleep(Duration::from_millis(100));
+        for revision in 1..=3 {
+            let update = updates.recv().unwrap().unwrap();
+            assert_eq!(update.revision, revision);
+            assert_eq!(update.views.len(), 400);
+        }
+        writer.join().unwrap();
+    }
+
+    #[test]
+    fn subscription_rejects_non_monotonic_revisions() {
+        let (client, mut server) = UnixStream::pair().unwrap();
+        let updates = subscription_stream(client).unwrap();
+        read_request_line(&server);
+        write_response(
+            &mut server,
+            &Response::state(3, State::initial(), Topology::default(), Vec::new()),
+        )
+        .unwrap();
+        write_response(
+            &mut server,
+            &Response::state(3, State::initial(), Topology::default(), Vec::new()),
+        )
+        .unwrap();
+        assert_eq!(updates.recv().unwrap().unwrap().revision, 3);
+        assert!(matches!(
+            updates.recv().unwrap(),
+            Err(ClientError::Protocol(message)) if message.contains("did not advance")
+        ));
     }
 
     #[test]
