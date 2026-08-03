@@ -14,11 +14,11 @@
 
 ## Phase 2: Make state mutations and hook backups durable
 
-- [ ] Sync the state directory after `state.json` rename and clear deletions.
-- [ ] Make `hooks::backup` reserve collision-safe, non-overwriting paths.
-- [ ] Test two immediate hook updates preserve both rollback snapshots.
-- [ ] Retain existing file and event-log sync behavior.
-- [ ] Commit: `fix(storage): preserve durable state and hook backups`
+- [x] Sync the state directory after `state.json` rename and clear deletions.
+- [x] Make `hooks::backup` reserve collision-safe, non-overwriting paths.
+- [x] Test two immediate hook updates preserve both rollback snapshots.
+- [x] Retain existing file and event-log sync behavior.
+- [x] Commit: `fix(storage): preserve durable state and hook backups`
 
 ## Phase 3: Give daemon startup one owner
 

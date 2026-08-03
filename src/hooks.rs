@@ -2,7 +2,7 @@ use crate::fsutil::sync_dir;
 use serde_json::{Map, Value};
 use std::env;
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{self, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -513,11 +513,38 @@ fn backup(path: &Path) -> Result<(), String> {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        let backup = PathBuf::from(format!("{}.amux.bak.{timestamp}", path.display()));
-        fs::copy(path, &backup).map_err(|error| error.to_string())?;
-        File::open(&backup)
-            .and_then(|file| file.sync_all())
+        let base = format!("{}.amux.bak.{timestamp}", path.display());
+        let mut suffix = 0_u64;
+        let (backup, mut output) = loop {
+            let candidate = if suffix == 0 {
+                PathBuf::from(&base)
+            } else {
+                PathBuf::from(format!("{base}.{suffix}"))
+            };
+            match OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .mode(0o600)
+                .open(&candidate)
+            {
+                Ok(file) => break (candidate, file),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => suffix += 1,
+                Err(error) => return Err(error.to_string()),
+            }
+        };
+        let mut input = File::open(path).map_err(|error| error.to_string())?;
+        io::copy(&mut input, &mut output).map_err(|error| error.to_string())?;
+        let mode = fs::metadata(path)
+            .map_err(|error| error.to_string())?
+            .permissions()
+            .mode()
+            & 0o777;
+        output
+            .set_permissions(fs::Permissions::from_mode(mode))
             .map_err(|error| error.to_string())?;
+        output.sync_all().map_err(|error| error.to_string())?;
+        drop(output);
+        debug_assert!(backup.exists());
         let parent = path
             .parent()
             .ok_or_else(|| "configuration path has no parent".to_owned())?;
@@ -715,6 +742,31 @@ mod tests {
             fs::metadata(destination).unwrap().permissions().mode() & 0o777,
             0o600
         );
+        fs::remove_dir_all(paths.home).unwrap();
+    }
+
+    #[test]
+    fn immediate_updates_keep_distinct_rollback_snapshots() {
+        let paths = paths();
+        let destination = paths.home.join("settings.json");
+        fs::write(&destination, "original").unwrap();
+
+        write_text(&destination, "intermediate", "test", Mode::Write).unwrap();
+        write_text(&destination, "final", "test", Mode::Write).unwrap();
+
+        let prefix = format!(
+            "{}.amux.bak.",
+            destination.file_name().unwrap().to_string_lossy()
+        );
+        let mut snapshots = fs::read_dir(&paths.home)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+            .map(|entry| fs::read_to_string(entry.path()).unwrap())
+            .collect::<Vec<_>>();
+        snapshots.sort();
+        assert_eq!(snapshots, ["intermediate", "original"]);
+        assert_eq!(fs::read_to_string(destination).unwrap(), "final");
         fs::remove_dir_all(paths.home).unwrap();
     }
 

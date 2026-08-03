@@ -153,6 +153,7 @@ pub fn write_event(
         .map_err(|error| error.to_string())?;
     temporary.sync_all().map_err(|error| error.to_string())?;
     fs::rename(&temp, config.state_file()).map_err(|error| error.to_string())?;
+    sync_dir(&config.state_dir)?;
     Ok(WriteEventResult {
         logged: changed,
         over_compact_threshold: changed
@@ -337,10 +338,15 @@ fn write_lines(path: &std::path::Path, lines: &[String]) -> Result<(), String> {
 
 pub fn clear(config: &Config) -> Result<(), String> {
     let _lock = acquire(config)?;
+    let mut removed = false;
     for path in [config.state_file(), config.events_file()] {
         if path.exists() {
             fs::remove_file(path).map_err(|error| error.to_string())?;
+            removed = true;
         }
+    }
+    if removed {
+        sync_dir(&config.state_dir)?;
     }
     Ok(())
 }
@@ -639,6 +645,32 @@ mod tests {
                 .count(),
             1
         );
+        fs::remove_dir_all(config.state_dir).unwrap();
+    }
+
+    #[test]
+    fn durable_state_replacement_and_clear_cover_both_directory_mutations() {
+        let config = config(200);
+        write_event(
+            &config,
+            "codex:durable".to_owned(),
+            Record {
+                status: "running".to_owned(),
+                ..Record::default()
+            },
+            &serde_json::json!({"key": "codex:durable"}),
+            10,
+        )
+        .unwrap();
+        assert!(config.state_file().is_file());
+        assert!(config.events_file().is_file());
+
+        clear(&config).unwrap();
+        assert!(!config.state_file().exists());
+        assert!(!config.events_file().exists());
+        // A second clear proves the no-mutation path does not require files to
+        // exist while still acquiring the normal durable-state lock.
+        clear(&config).unwrap();
         fs::remove_dir_all(config.state_dir).unwrap();
     }
 }
