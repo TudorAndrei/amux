@@ -1,10 +1,9 @@
 use crate::config::Config;
-use crate::{daemon, event, hooks, ipc, model, render, sessions, state, tmux, ui};
+use crate::{daemon, event, hooks, intake, ipc, model, render, sessions, state, tmux, ui};
 use clap::{Args, CommandFactory, Parser, Subcommand};
-use serde_json::Value;
 use std::env;
 use std::fs;
-use std::io::{self, Read};
+use std::io;
 #[cfg(unix)]
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::process::{Command, ExitCode, Stdio};
@@ -106,15 +105,7 @@ fn die(message: impl AsRef<str>) -> ExitCode {
 }
 
 fn cmd_event(config: &Config, args: EventArgs) -> Result<(), String> {
-    let mut source = String::new();
-    io::stdin()
-        .read_to_string(&mut source)
-        .map_err(|error| error.to_string())?;
-    if source.trim().is_empty() {
-        source = "{}".to_owned();
-    }
-    let raw: Value =
-        serde_json::from_str(&source).map_err(|_| "event input is not valid JSON".to_owned())?;
+    let raw = intake::read_hook_json(io::stdin().lock())?;
     // The daemon already owns a live tmux topology. Passing just the pane id
     // avoids two `tmux display-message` processes for every hook. The direct
     // fallback still resolves the full context below.
@@ -147,23 +138,7 @@ fn cmd_event(config: &Config, args: EventArgs) -> Result<(), String> {
         false
     };
     if !written_by_daemon {
-        let (key, record) = event::normalize(
-            &args.agent,
-            &args.event,
-            &args.status,
-            &args.attention,
-            &args.reason,
-            raw,
-        );
-        let timestamp = record.updated_at;
-        let mut event_fields = serde_json::to_value(&record)
-            .map_err(|error| error.to_string())?
-            .as_object()
-            .cloned()
-            .unwrap_or_default();
-        event_fields.insert("key".to_owned(), Value::String(key.clone()));
-        let event_log = Value::Object(event_fields);
-        let _ = state::write_event(config, key, record, &event_log, timestamp)?;
+        intake::persist(config, hook_request, event::current_tmux_context())?;
     }
     Ok(())
 }

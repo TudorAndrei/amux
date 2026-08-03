@@ -62,16 +62,16 @@
 
 ## Phase 7: Build one bounded durable event-intake module
 
-- [ ] Add one module for bounded parsing, normalization, retention, and
+- [x] Add one module for bounded parsing, normalization, retention, and
   persistence.
-- [ ] Reject oversized stdin before full allocation or JSON parsing.
-- [ ] Project retained raw data through an explicit metadata allowlist.
-- [ ] Cap every persisted identifier and key contribution on UTF-8 boundaries.
-- [ ] Route daemon and daemon-less writes through the same intake interface.
-- [ ] Prevent daemon rejections from falling through to direct persistence.
-- [ ] Test path equivalence, oversized input/identifiers, sensitive unknown
+- [x] Reject oversized stdin before full allocation or JSON parsing.
+- [x] Project retained raw data through an explicit metadata allowlist.
+- [x] Cap every persisted identifier and key contribution on UTF-8 boundaries.
+- [x] Route daemon and daemon-less writes through the same intake interface.
+- [x] Prevent daemon rejections from falling through to direct persistence.
+- [x] Test path equivalence, oversized input/identifiers, sensitive unknown
   fields, subagent metadata, empty stdin, and malformed JSON.
-- [ ] Commit: `fix(event): enforce one bounded durable intake path`
+- [x] Commit: `fix(event): enforce one bounded durable intake path`
 
 ## Phase 8: Concentrate lifecycle policy
 

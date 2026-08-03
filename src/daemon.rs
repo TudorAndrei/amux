@@ -2,7 +2,7 @@ mod live_model;
 mod maintenance;
 
 use crate::config::Config;
-use crate::event;
+use crate::intake;
 use crate::ipc::{self, HookRequest, Request, Response};
 use crate::state;
 use std::fs::{self, File, OpenOptions};
@@ -256,29 +256,7 @@ fn handle(
             let tmux = context_for_known_pane(&shared, &request.tmux_pane)
                 .or_else(|| context_from_request(&request))
                 .unwrap_or_default();
-            let (key, record) = event::normalize_at(event::NormalizeInput {
-                agent: &request.agent,
-                event_override: &request.event,
-                status_override: &request.status,
-                attention_override: &request.attention,
-                reason_override: &request.reason,
-                raw: request.raw,
-                fallback_cwd: request.cwd,
-                tmux,
-            });
-            let mut fields = serde_json::to_value(&record)
-                .map_err(|error| error.to_string())?
-                .as_object()
-                .cloned()
-                .unwrap_or_default();
-            fields.insert("key".to_owned(), serde_json::Value::String(key.clone()));
-            let write = state::write_event(
-                config,
-                key,
-                record,
-                &serde_json::Value::Object(fields),
-                event::now(),
-            )?;
+            let write = intake::persist(config, request, tmux)?;
             let mut guard = shared
                 .lock()
                 .map_err(|_| "daemon state lock poisoned".to_owned())?;

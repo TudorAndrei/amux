@@ -588,6 +588,96 @@ fn daemon_rejection_never_falls_back_to_direct_persistence() {
 }
 
 #[test]
+fn oversized_event_input_is_rejected_before_persistence() {
+    use std::io::Write;
+
+    let state = temp_dir("oversized-event");
+    let mut event = amux(&state);
+    event
+        .args(["event", "--agent", "codex", "--event", "PostToolUse"])
+        .stderr(Stdio::piped())
+        .stdin(Stdio::piped());
+    let mut event = event.spawn().unwrap();
+    event
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(&vec![b'x'; 256 * 1024 + 1])
+        .unwrap();
+    let output = event.wait_with_output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("exceeds 256 KiB"));
+    assert!(!state.join("state.json").exists());
+    assert!(!state.join("events.jsonl").exists());
+    fs::remove_dir_all(state).unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn daemon_and_daemonless_events_use_equivalent_minimized_intake() {
+    use std::io::Write;
+
+    let direct = temp_dir("intake-direct");
+    let daemon = temp_dir("intake-daemon");
+    let payload = br#"{
+        "session_id":"equivalent-session",
+        "cwd":"/workspace",
+        "agent_id":"child-agent",
+        "is_subagent":true,
+        "tool_input":{"command":"sensitive command"},
+        "message":"sensitive prompt",
+        "unknown":"sensitive unknown"
+    }"#;
+    event(
+        &direct,
+        "codex",
+        &["--event", "PostToolUse"],
+        payload.to_vec(),
+    );
+
+    let mut hook = Command::new(env!("CARGO_BIN_EXE_amux-rs"));
+    hook.args(["event", "--agent", "codex", "--event", "PostToolUse"])
+        .env("AMUX_STATE_DIR", &daemon)
+        .env_remove("AMUX_NO_DAEMON")
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .stdin(Stdio::piped());
+    let mut hook = hook.spawn().unwrap();
+    hook.stdin.as_mut().unwrap().write_all(payload).unwrap();
+    assert!(hook.wait_with_output().unwrap().status.success());
+
+    let normalized_record = |state_dir: &Path| {
+        let state: Value =
+            serde_json::from_slice(&fs::read(state_dir.join("state.json")).unwrap()).unwrap();
+        let mut record = state["records"]["codex:equivalent-session"].clone();
+        record["updated_at"] = Value::from(0);
+        record["updated_at_iso"] = Value::from("");
+        record
+    };
+    let direct_record = normalized_record(&direct);
+    let daemon_record = normalized_record(&daemon);
+    assert_eq!(direct_record, daemon_record);
+    assert_eq!(direct_record["raw"]["agent_id"], "child-agent");
+    for sensitive in ["tool_input", "message", "unknown"] {
+        assert!(direct_record["raw"].get(sensitive).is_none());
+    }
+    assert!(
+        !fs::read_to_string(direct.join("events.jsonl"))
+            .unwrap()
+            .contains("sensitive")
+    );
+    assert!(
+        !fs::read_to_string(daemon.join("events.jsonl"))
+            .unwrap()
+            .contains("sensitive")
+    );
+
+    let _ = daemon_request(&daemon, r#"{"kind":"shutdown"}"#);
+    fs::remove_dir_all(direct).unwrap();
+    fs::remove_dir_all(daemon).unwrap();
+}
+
+#[test]
 #[cfg(unix)]
 fn daemon_clear_waits_for_maintenance_and_history_stays_absent() {
     use std::io::Write;
