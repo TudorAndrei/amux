@@ -1,0 +1,28 @@
+# Third-party notices
+
+This file is generated from `Cargo.lock` by `mise run licenses`. Do not edit it
+by hand. The list covers direct and transitive dependencies compiled into amux
+for its supported release targets.
+
+## Components
+
+| Component | Version | License | Source |
+| --- | --- | --- | --- |
+{{#each crates}}
+{{#unless (eq package.name "amux")}}
+| `{{package.name}}` | {{package.version}} | `{{{license}}}` | [source]({{#if package.repository}}{{package.repository}}{{else}}https://crates.io/crates/{{package.name}}{{/if}}) |
+{{/unless}}
+{{/each}}
+
+## License texts{{#each overview}}
+
+### {{name}} (`{{id}}`)
+
+```text
+{{{text}}}
+```
+
+{{~/each}}
+
+
+<!-- End of generated notices. -->

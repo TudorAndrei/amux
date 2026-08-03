@@ -3,6 +3,7 @@ name = "amux"
 version = "0.4.2"
 edition = "2024"
 rust-version = "1.96"
+license = "Apache-2.0"
 
 [[bin]]
 name = "amux-rs"

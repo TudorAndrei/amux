@@ -286,3 +286,8 @@ and filters only the tmux session name; visible status, reason, cwd, pane, age,
 and agent details never contribute matches. It receives daemon updates while
 keyboard input remains responsive; arrow keys, `j`/`k`, and `Ctrl-N`/`Ctrl-P`
 navigate results, while `Ctrl-R` requests an immediate tmux redraw.
+
+## License
+
+amux is licensed under the [Apache License 2.0](LICENSE). Dependency license
+terms are recorded in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

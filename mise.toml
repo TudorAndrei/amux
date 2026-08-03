@@ -8,6 +8,7 @@ shfmt = "3.13.1"
 gitleaks = "8.30.1"
 actionlint = "1.7.12"
 "npm:markdownlint-cli" = "0.49.1"
+"cargo:cargo-about" = { version = "0.9.1", features = "cli" }
 
 [env]
 HK_MISE = 1
@@ -32,7 +33,7 @@ package="amux-${version}-${target}"
 
 cargo build --release --bin amux-rs
 mkdir -p "dist/${package}/bin" "dist/${package}/docs" "dist/${package}/hooks" "dist/${package}/scripts"
-cp amux.tmux README.md THIRD_PARTY_NOTICES.md VERSION "dist/${package}/"
+cp amux.tmux LICENSE README.md THIRD_PARTY_NOTICES.md VERSION "dist/${package}/"
 cp bin/amux target/release/amux-rs "dist/${package}/bin/"
 cp scripts/ensure-runtime.sh "dist/${package}/scripts/"
 cp -R docs/. "dist/${package}/docs/"
@@ -55,5 +56,22 @@ trap 'rm -rf "$package_dir"' EXIT
 tar -xzf "dist/${package}.tar.gz" -C "$package_dir"
 test ! -e "$package_dir/${package}/Cargo.toml"
 test -x "$package_dir/${package}/scripts/ensure-runtime.sh"
+cmp LICENSE "$package_dir/${package}/LICENSE"
+cmp THIRD_PARTY_NOTICES.md "$package_dir/${package}/THIRD_PARTY_NOTICES.md"
 "$package_dir/${package}/bin/amux" --version
+'''
+
+[tasks.licenses]
+description = "Regenerate third-party notices from the locked dependency graph"
+run = "cargo about generate --all-features --locked --fail --config about.toml --output-file THIRD_PARTY_NOTICES.md about.hbs"
+
+[tasks.licenses-check]
+description = "Reject unaccepted licenses and stale third-party notices"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+generated="$(mktemp)"
+trap 'rm -f "$generated"' EXIT
+cargo about generate --all-features --locked --fail --config about.toml --output-file "$generated" about.hbs
+diff -u THIRD_PARTY_NOTICES.md "$generated"
 '''

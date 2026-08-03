@@ -46,9 +46,14 @@ bash tests/smoke.sh
 bash tests/tpm-bootstrap.sh
 """
   }
-  ["package-check"] {
+  ["license-notices"] {
     exclusive = true
     depends = List("smoke")
+    check = "mise run licenses-check"
+  }
+  ["package-check"] {
+    exclusive = true
+    depends = List("license-notices")
     check = "mise run package-check"
   }
 }
