@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.5.1](https://github.com/TudorAndrei/amux/compare/1f158d8b11a5f68c874471a8ae67851b01350ab2..v0.5.1) - 2026-08-03
+#### Bug Fixes
+- (**picker**) target invoking tmux client - ([1f158d8](https://github.com/TudorAndrei/amux/commit/1f158d8b11a5f68c874471a8ae67851b01350ab2)) - TudorAndrei
+
+- - -
+
 ## [v0.5.0](https://github.com/TudorAndrei/amux/compare/27fa3e7a8188a6d2d5eacd7432ef3e310f034351..v0.5.0) - 2026-08-03
 #### Features
 - (**cli**) stream live session revisions as json - ([b71d012](https://github.com/TudorAndrei/amux/commit/b71d01245ab7e2e39f3bca9728a17beee3dd18f2)) - TudorAndrei
