@@ -108,13 +108,13 @@
 
 ## Phase 11: Define licensing and generate complete notices
 
-- [ ] Obtain the maintainer's explicit project-license choice.
-- [ ] Add the root license and matching Cargo metadata.
-- [ ] Add a reproducible license/notices tool and checked policy.
-- [ ] Regenerate `THIRD_PARTY_NOTICES.md` from `Cargo.lock`.
-- [ ] Add an hk drift/policy check.
-- [ ] Verify packaged archives contain current license and notices.
-- [ ] Commit:
+- [x] Obtain the maintainer's explicit project-license choice.
+- [x] Add the root license and matching Cargo metadata.
+- [x] Add a reproducible license/notices tool and checked policy.
+- [x] Regenerate `THIRD_PARTY_NOTICES.md` from `Cargo.lock`.
+- [x] Add an hk drift/policy check.
+- [x] Verify packaged archives contain current license and notices.
+- [x] Commit:
   `docs(license): define terms and generate dependency notices`
 
 ## Phase 12: Add event-history inspection
@@ -159,46 +159,46 @@
 
 ## Verification
 
-- [ ] `cargo test --all-features` passes after every phase.
-- [ ] `bash tests/smoke.sh` passes after every phase touching runtime behavior.
-- [ ] `bash tests/tpm-bootstrap.sh` passes after every packaging, launcher, or
+- [x] `cargo test --all-features` passes after every phase.
+- [x] `bash tests/smoke.sh` passes after every phase touching runtime behavior.
+- [x] `bash tests/tpm-bootstrap.sh` passes after every packaging, launcher, or
   hook change.
-- [ ] `hk check` passes before every phase commit.
-- [ ] `git status --short` contains only the intended phase files before each
+- [x] `hk check` passes before every phase commit.
+- [x] `git status --short` contains only the intended phase files before each
   commit.
-- [ ] Shared Rust module tests execute once, with hook-only tests retained.
-- [ ] Existing `list`, `sessions`, `picker`, `clear`, `doctor`,
+- [x] Shared Rust module tests execute once, with hook-only tests retained.
+- [x] Existing `list`, `sessions`, `picker`, `clear`, `doctor`,
   `install-hooks`, and `uninstall-hooks` behavior remains covered.
-- [ ] State version remains 1 and existing state files load without migration.
-- [ ] Daemon and `AMUX_NO_DAEMON=1` event paths produce equivalent records.
-- [ ] Clear cannot be followed by reappearing pre-clear state or event history.
-- [ ] Concurrent daemon starters leave exactly one reachable socket owner.
-- [ ] Two same-second hook updates retain two non-overwritten backups.
-- [ ] Oversized and rejected hook input cannot bypass intake limits.
-- [ ] Persisted raw metadata contains no unknown tool/message/command fields.
-- [ ] Doctor distinguishes Codex, Claude, Pi, and opencode drift without
+- [x] State version remains 1 and existing state files load without migration.
+- [x] Daemon and `AMUX_NO_DAEMON=1` event paths produce equivalent records.
+- [x] Clear cannot be followed by reappearing pre-clear state or event history.
+- [x] Concurrent daemon starters leave exactly one reachable socket owner.
+- [x] Two same-second hook updates retain two non-overwritten backups.
+- [x] Oversized and rejected hook input cannot bypass intake limits.
+- [x] Persisted raw metadata contains no unknown tool/message/command fields.
+- [x] Doctor distinguishes Codex, Claude, Pi, and opencode drift without
   flagging the canonical TPM launcher path.
-- [ ] A docs-only main push runs checks but skips release packaging/publication.
-- [ ] A releasing main push still publishes all three target archives.
-- [ ] Release archives contain the selected project license and generated
+- [x] A docs-only main push runs checks but skips release packaging/publication.
+- [x] A releasing main push still publishes all three target archives.
+- [x] Release archives contain the selected project license and generated
   third-party notices.
-- [ ] `events` text output is terminal-safe and JSON output is bounded.
-- [ ] `watch --json` emits monotonic revisions and fails visibly on disconnect.
-- [ ] Manual smoke test: install rendered hooks in an isolated home, emit one
+- [x] `events` text output is terminal-safe and JSON output is bounded.
+- [x] `watch --json` emits monotonic revisions and fails visibly on disconnect.
+- [x] Manual smoke test: install rendered hooks in an isolated home, emit one
   lifecycle sequence per supported agent, inspect `events`, observe
   `watch --json`, open the picker, run `next-attention`, clear state, and
   confirm `doctor` reports all integrations accurately.
-- [ ] Refactor phases 1, 4, 6, and 8 introduce no behavior change beyond the
+- [x] Refactor phases 1, 4, 6, and 8 introduce no behavior change beyond the
   separately identified fixes.
-- [ ] The measured native hook latency and session projection remain documented;
+- [x] The measured native hook latency and session projection remain documented;
   any material regression is investigated before proceeding.
 
 ## Review
 
-- [ ] Code reviewed after every phase.
-- [ ] PLAN.md updated if an approach or phase split changes.
-- [ ] All phase commits are clean and use the exact drafted messages.
-- [ ] TODO commit boxes are checked only after the corresponding commit succeeds.
-- [ ] Open questions are resolved before their dependent phases.
-- [ ] No source change extends beyond the phase being committed.
-- [ ] TODO.md items are all checked before declaring the roadmap complete.
+- [x] Code reviewed after every phase.
+- [x] PLAN.md updated if an approach or phase split changes.
+- [x] All phase commits are clean and use the exact drafted messages.
+- [x] TODO commit boxes are checked only after the corresponding commit succeeds.
+- [x] Open questions are resolved before their dependent phases.
+- [x] No source change extends beyond the phase being committed.
+- [x] TODO.md items are all checked before declaring the roadmap complete.

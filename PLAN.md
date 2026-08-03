@@ -377,17 +377,17 @@ Explicitly out of scope:
 - Pi/opencode upstream capabilities may not support the desired fidelity.
   Phase 15 must not manufacture unreliable attention states.
 
-## Open Questions
+## Resolved Decisions
 
-- Which license should amux use? Recommendation: choose before Phase 11; no
-  executor should guess.
-- Is the current undocumented Rust library surface supported externally?
-  Recommendation: treat it as internal and expose only the CLI entry interface,
-  unless evidence of consumers exists.
-- Should Cargo dependency updates join the GitHub Actions Dependabot policy in
-  Phase 10? Recommendation: enable grouped, scheduled Rust updates separately
-  from action pins.
-- Should `events --json` be a JSON array or NDJSON? Recommendation: use a JSON
-  array for bounded history and reserve NDJSON for unbounded `watch --json`.
-- Which Pi/opencode signals are stable enough for Phase 15? Resolve from the
-  Phase 14 capability matrix, not from inference.
+- The maintainer selected Apache-2.0 for amux before Phase 11. The root
+  `LICENSE`, Cargo SPDX metadata, generated notices, and release archives all
+  reflect that choice.
+- The undocumented Rust modules remain incidental compatibility surface, not a
+  supported external API. `cli::run` is the intended crate entry interface.
+- Dependabot covers GitHub Actions only. Cargo updates remain maintainer-led
+  until a separate grouped Rust update policy is explicitly requested.
+- Bounded `events --json` returns a JSON array; unbounded `watch --json` uses
+  NDJSON.
+- Phase 14 confirmed only the Pi and opencode signals recorded in the adapter
+  capability matrix. Phase 15 implemented those signals without inferred
+  timers or speculative attention states.
