@@ -159,6 +159,38 @@ pub(crate) fn retained_metadata(raw: &Value) -> Value {
                 serde_json::json!({"id": truncate_utf8(id, MAX_SESSION_BYTES)}),
             );
     }
+    if let Some(event) = input.get("event").and_then(Value::as_object)
+        && let Some(properties) = event.get("properties").and_then(Value::as_object)
+    {
+        let mut retained_properties = Map::new();
+        if let Some(session_id) = properties.get("sessionID").and_then(Value::as_str) {
+            retained_properties.insert(
+                "sessionID".to_owned(),
+                Value::String(truncate_utf8(session_id, MAX_SESSION_BYTES)),
+            );
+        }
+        if let Some(status_type) = properties
+            .get("status")
+            .and_then(Value::as_object)
+            .and_then(|status| status.get("type"))
+            .and_then(Value::as_str)
+        {
+            retained_properties.insert(
+                "status".to_owned(),
+                serde_json::json!({
+                    "type": truncate_utf8(status_type, MAX_STATUS_BYTES)
+                }),
+            );
+        }
+        if !retained_properties.is_empty() {
+            output
+                .entry("event".to_owned())
+                .or_insert_with(|| Value::Object(Map::new()))
+                .as_object_mut()
+                .expect("event projection is an object")
+                .insert("properties".to_owned(), Value::Object(retained_properties));
+        }
+    }
     retain_nested(input, &mut output, "session", &["id"]);
     retain_nested(input, &mut output, "project", &["directory"]);
     Value::Object(output)
@@ -313,6 +345,48 @@ mod tests {
         }
         let log = fs::read_to_string(config.events_file()).unwrap();
         for sensitive in ["secret prompt", "rm -rf secret", "unknown"] {
+            assert!(!log.contains(sensitive), "logged {sensitive}");
+        }
+        fs::remove_dir_all(config.state_dir).unwrap();
+    }
+
+    #[test]
+    fn opencode_envelope_retains_only_session_and_status_lifecycle_fields() {
+        let config = config("opencode-envelope");
+        let mut request = request(serde_json::json!({
+            "event": {
+                "type": "session.status",
+                "properties": {
+                    "sessionID": "opencode-session",
+                    "status": {"type": "idle", "message": "private retry message"},
+                    "metadata": {"command": "private command"}
+                }
+            },
+            "directory": "/workspace",
+            "worktree": "/private/worktree"
+        }));
+        request.agent = "opencode".to_owned();
+        request.event = "session.status".to_owned();
+        persist(&config, request, TmuxContext::default()).unwrap();
+
+        let state = crate::state::load(&config).unwrap();
+        let record = &state.records["opencode:opencode-session"];
+        assert_eq!(record.status, "done");
+        assert!(!record.attention);
+        assert_eq!(record.cwd, "/workspace");
+        assert_eq!(
+            record.raw["event"]["properties"],
+            serde_json::json!({
+                "sessionID": "opencode-session",
+                "status": {"type": "idle"}
+            })
+        );
+        let log = fs::read_to_string(config.events_file()).unwrap();
+        for sensitive in [
+            "private retry message",
+            "private command",
+            "private/worktree",
+        ] {
             assert!(!log.contains(sensitive), "logged {sensitive}");
         }
         fs::remove_dir_all(config.state_dir).unwrap();

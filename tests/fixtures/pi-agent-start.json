@@ -1,8 +1,5 @@
 {
   "type": "agent_start",
   "session_id": "pi-session-1",
-  "cwd": "/tmp/amux-pi",
-  "event": {
-    "type": "agent_start"
-  }
+  "cwd": "/tmp/amux-pi"
 }

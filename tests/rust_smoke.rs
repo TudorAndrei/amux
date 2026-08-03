@@ -653,6 +653,137 @@ fn rendered_claude_hooks_classify_completion_notifications_in_both_event_paths()
 
 #[test]
 #[cfg(unix)]
+fn pi_and_opencode_lifecycles_match_with_and_without_the_daemon() {
+    use std::io::Write;
+
+    for daemonless in [true, false] {
+        let state = if daemonless {
+            temp_dir("integration-lifecycle-daemonless")
+        } else {
+            tmux_temp_dir("int-life")
+        };
+
+        for (agent, event_name, fixture_name, key, status, attention) in [
+            (
+                "pi",
+                "session_start",
+                "pi-session-start.json",
+                "pi:pi-session-1",
+                "running",
+                false,
+            ),
+            (
+                "pi",
+                "agent_start",
+                "pi-agent-start.json",
+                "pi:pi-session-1",
+                "running",
+                false,
+            ),
+            (
+                "pi",
+                "agent_settled",
+                "pi-agent-settled.json",
+                "pi:pi-session-1",
+                "done",
+                false,
+            ),
+            (
+                "pi",
+                "session_shutdown",
+                "pi-session-shutdown.json",
+                "pi:pi-session-1",
+                "offline",
+                false,
+            ),
+            (
+                "opencode",
+                "session.created",
+                "opencode-session-created.json",
+                "opencode:opencode-session-1",
+                "running",
+                false,
+            ),
+            (
+                "opencode",
+                "session.status",
+                "opencode-session-busy.json",
+                "opencode:opencode-session-1",
+                "running",
+                false,
+            ),
+            (
+                "opencode",
+                "permission.asked",
+                "opencode-permission-asked.json",
+                "opencode:opencode-session-1",
+                "attention",
+                true,
+            ),
+            (
+                "opencode",
+                "permission.replied",
+                "opencode-permission-replied.json",
+                "opencode:opencode-session-1",
+                "running",
+                false,
+            ),
+            (
+                "opencode",
+                "session.status",
+                "opencode-session-idle.json",
+                "opencode:opencode-session-1",
+                "done",
+                false,
+            ),
+            (
+                "opencode",
+                "session.deleted",
+                "opencode-session-deleted.json",
+                "opencode:opencode-session-1",
+                "offline",
+                false,
+            ),
+        ] {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_amux-rs"));
+            command
+                .args(["event", "--agent", agent, "--event", event_name])
+                .env("AMUX_STATE_DIR", &state)
+                .env_remove("TMUX")
+                .env_remove("TMUX_PANE")
+                .stdin(Stdio::piped());
+            if daemonless {
+                command.env("AMUX_NO_DAEMON", "1");
+            } else {
+                command.env_remove("AMUX_NO_DAEMON");
+            }
+            let mut command = command.spawn().unwrap();
+            command
+                .stdin
+                .as_mut()
+                .unwrap()
+                .write_all(&fixture(fixture_name))
+                .unwrap();
+            assert!(command.wait_with_output().unwrap().status.success());
+
+            let listed = amux(&state).args(["list", "--json"]).output().unwrap();
+            let listed: Value = serde_json::from_slice(&listed.stdout).unwrap();
+            assert_eq!(listed["records"][key]["status"], status, "{event_name}");
+            assert_eq!(
+                listed["records"][key]["attention"], attention,
+                "{event_name}"
+            );
+        }
+
+        if !daemonless {
+            let _ = daemon_request(&state, r#"{"kind":"shutdown"}"#);
+        }
+        fs::remove_dir_all(state).unwrap();
+    }
+}
+
+#[test]
+#[cfg(unix)]
 fn daemon_adopts_an_orphaned_event_log_before_compacting() {
     let _lock = real_server_test_lock();
     let state = temp_dir("orphaned-event-log");
@@ -951,7 +1082,12 @@ fn fixture_normalization_uses_the_v1_schema() {
     let state = temp_dir("fixtures");
     event(&state, "codex", &[], fixture("codex-permission.json"));
     event(&state, "claude", &[], fixture("claude-stop.json"));
-    event(&state, "opencode", &[], fixture("opencode-idle.json"));
+    event(
+        &state,
+        "opencode",
+        &[],
+        fixture("opencode-session-idle.json"),
+    );
     event(&state, "pi", &[], fixture("pi-tool-call.json"));
     event(&state, "codex", &[], fixture("codex-subagent.json"));
     event(
@@ -979,12 +1115,13 @@ fn fixture_normalization_uses_the_v1_schema() {
         value["records"]["claude:claude-session-1"]["status"],
         "done"
     );
-    assert!(
-        value["records"]
-            .as_object()
-            .unwrap()
-            .values()
-            .any(|record| record["agent"] == "opencode" && record["attention"] == true)
+    assert_eq!(
+        value["records"]["opencode:opencode-session-1"]["status"],
+        "done"
+    );
+    assert_eq!(
+        value["records"]["opencode:opencode-session-1"]["attention"],
+        false
     );
     assert_eq!(
         value["records"]["codex:prompt-session"]["status"],

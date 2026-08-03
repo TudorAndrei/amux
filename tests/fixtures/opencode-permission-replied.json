@@ -1,0 +1,10 @@
+{
+  "event": {
+    "type": "permission.replied",
+    "properties": {
+      "sessionID": "opencode-session-1"
+    }
+  },
+  "directory": "/tmp/amux-opencode",
+  "worktree": "/tmp/amux-opencode"
+}

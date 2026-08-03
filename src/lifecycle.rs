@@ -74,6 +74,33 @@ fn agent_policy(agent: &str, event: &str, metadata: &Value) -> (&'static str, bo
             _ => generic_policy(event),
         };
     }
+    if agent.eq_ignore_ascii_case("pi") {
+        return match event.to_ascii_lowercase().as_str() {
+            "session_start" | "agent_start" => ("running", false),
+            "agent_settled" => ("done", false),
+            "session_shutdown" => ("offline", false),
+            _ => generic_policy(event),
+        };
+    }
+    if agent.eq_ignore_ascii_case("opencode") {
+        return match event.to_ascii_lowercase().as_str() {
+            "session.created" | "permission.replied" => ("running", false),
+            "permission.asked" => ("attention", true),
+            "session.status" => {
+                match raw_string(metadata, &[&["event", "properties", "status", "type"]])
+                    .unwrap_or_default()
+                    .to_ascii_lowercase()
+                    .as_str()
+                {
+                    "idle" => ("done", false),
+                    "busy" | "retry" => ("running", false),
+                    _ => ("running", false),
+                }
+            }
+            "session.deleted" => ("offline", false),
+            _ => generic_policy(event),
+        };
+    }
     generic_policy(event)
 }
 
@@ -214,5 +241,65 @@ mod tests {
         let unknown = policy("future-agent", "new.signal", serde_json::json!({}));
         assert_eq!(unknown.status, "running");
         assert!(!unknown.attention);
+    }
+
+    #[test]
+    fn pi_policy_uses_only_confirmed_lifecycle_signals() {
+        for (event, status, attention) in [
+            ("session_start", "running", false),
+            ("agent_start", "running", false),
+            ("agent_settled", "done", false),
+            ("session_shutdown", "offline", false),
+            ("tool_call", "running", false),
+            ("input", "running", false),
+            ("future_signal", "running", false),
+        ] {
+            let result = policy("pi", event, serde_json::json!({}));
+            assert_eq!(result.status, status, "{event}");
+            assert_eq!(result.attention, attention, "{event}");
+        }
+    }
+
+    #[test]
+    fn opencode_policy_uses_status_metadata_and_stable_attention_only() {
+        for (event, metadata, status, attention) in [
+            ("session.created", serde_json::json!({}), "running", false),
+            (
+                "session.status",
+                serde_json::json!({"event":{"properties":{"status":{"type":"busy"}}}}),
+                "running",
+                false,
+            ),
+            (
+                "session.status",
+                serde_json::json!({"event":{"properties":{"status":{"type":"retry"}}}}),
+                "running",
+                false,
+            ),
+            (
+                "session.status",
+                serde_json::json!({"event":{"properties":{"status":{"type":"future"}}}}),
+                "running",
+                false,
+            ),
+            (
+                "session.status",
+                serde_json::json!({"event":{"properties":{"status":{"type":"idle"}}}}),
+                "done",
+                false,
+            ),
+            ("permission.asked", serde_json::json!({}), "attention", true),
+            (
+                "permission.replied",
+                serde_json::json!({}),
+                "running",
+                false,
+            ),
+            ("session.deleted", serde_json::json!({}), "offline", false),
+        ] {
+            let result = policy("opencode", event, metadata);
+            assert_eq!(result.status, status, "{event}");
+            assert_eq!(result.attention, attention, "{event}");
+        }
     }
 }

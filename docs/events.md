@@ -146,12 +146,12 @@ session but does not report a normal TUI or process close. The current runtime
 forwards event data to legacy plugins under `event.properties`; adapters must
 not infer lifecycle state from undocumented payload fields.
 
-These confirmed signals unblock Phase 15 for both adapters: Pi can gain exact
+These confirmed signals are implemented for both adapters. Pi gains exact
 activity, completion, and shutdown transitions while retaining its documented
-attention limitation; opencode can gain exact start, activity, idle,
-permission, and deletion transitions while retaining its normal-close and
-question-input limitations. Unknown future events remain conservative
-activity.
+attention limitation. opencode gains exact start, activity, idle, permission,
+and deletion transitions while retaining its normal-close and question-input
+limitations. Unknown future events remain conservative activity at the policy
+seam.
 
 Primary references are pinned to the inspected [Pi revision][pi-revision] and
 [opencode revision][opencode-revision]. The exact documentation, type, schema,
@@ -163,11 +163,24 @@ runtime publisher, and compatibility-bridge links are recorded in
 
 ## opencode
 
-The global plugin is installed into `~/.config/opencode/plugins/amux.js`. The
-matrix above defines the confirmed lifecycle mapping for Phase 15.
+The global plugin is installed into `~/.config/opencode/plugins/amux.js`. It
+forwards only the confirmed events in the matrix, plus `permission.replied` to
+clear attention. Unrelated events, the deprecated duplicate `session.idle`,
+and unstable `question.*` events are ignored so they cannot overwrite the
+current lifecycle state. The plugin projects only `sessionID` and
+`status.type`; prompts, permission resources, tool data, and other event fields
+never enter amux intake.
+
+`session.deleted` marks explicit deletion as offline. opencode exposes no
+stable session-specific plugin event for normal TUI or process closure, so
+normal close continues to rely on the configured stale-record expiry rather
+than a timer or process poll in the adapter.
 
 ## Pi
 
 The Pi extension is installed into `~/.pi/agent/extensions/amux.ts` and
-registered in `~/.pi/agent/settings.json`. The matrix above defines the
-confirmed lifecycle mapping for Phase 15.
+registered in `~/.pi/agent/settings.json`. It sends only the confirmed event
+name, session id, cwd, and optional lifecycle reason. Status and attention are
+classified in Rust. Pi exposes no observer event for another component's
+permission dialog or an agent waiting for input, so those states remain
+unsupported instead of being inferred.

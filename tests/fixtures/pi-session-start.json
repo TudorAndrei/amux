@@ -2,8 +2,5 @@
   "type": "session_start",
   "session_id": "pi-session-1",
   "cwd": "/tmp/amux-pi",
-  "event": {
-    "type": "session_start",
-    "reason": "startup"
-  }
+  "reason": "startup"
 }

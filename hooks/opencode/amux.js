@@ -1,6 +1,13 @@
 import { spawn } from "node:child_process"
 
 const AMUX_BIN = "__AMUX_BIN__"
+const LIFECYCLE_EVENTS = new Set([
+  "session.created",
+  "session.status",
+  "permission.asked",
+  "permission.replied",
+  "session.deleted",
+])
 
 function send(payload, args = []) {
   return new Promise((resolve) => {
@@ -17,14 +24,20 @@ export const AmuxPlugin = async (ctx) => {
   return {
     event: async ({ event }) => {
       const type = event?.type || "event"
-      const attentionArgs = type === "session.idle"
-        ? ["--attention", "1", "--reason", "session idle"]
-        : []
+      if (!LIFECYCLE_EVENTS.has(type)) return
+      const sessionID = event?.properties?.sessionID
+      const statusType = event?.properties?.status?.type
+      const properties = {
+        ...(typeof sessionID === "string" ? { sessionID } : {}),
+        ...(type === "session.status" && typeof statusType === "string"
+          ? { status: { type: statusType } }
+          : {}),
+      }
       await send({
-        event,
+        event: { type, properties },
         directory: ctx.directory,
         worktree: ctx.worktree,
-      }, ["--event", type, ...attentionArgs])
+      }, ["--event", type])
     },
   }
 }

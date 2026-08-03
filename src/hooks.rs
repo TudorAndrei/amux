@@ -922,6 +922,47 @@ mod tests {
     }
 
     #[test]
+    fn rendered_pi_and_opencode_assets_use_only_confirmed_lifecycle_signals() {
+        let paths = paths();
+        install_at(&paths, Mode::Write).unwrap();
+
+        let pi = fs::read_to_string(paths.home.join(".pi/agent/extensions/amux.ts")).unwrap();
+        for event in [
+            "session_start",
+            "agent_start",
+            "agent_settled",
+            "session_shutdown",
+        ] {
+            assert!(pi.contains(&format!("pi.on(\"{event}\"")), "{event}");
+        }
+        for unsupported in ["tool_call", "input", "project_trust"] {
+            assert!(!pi.contains(&format!("pi.on(\"{unsupported}\"")));
+        }
+        assert!(!pi.contains("--status"));
+        assert!(!pi.contains("--attention"));
+
+        let opencode =
+            fs::read_to_string(paths.home.join(".config/opencode/plugins/amux.js")).unwrap();
+        for event in [
+            "session.created",
+            "session.status",
+            "permission.asked",
+            "permission.replied",
+            "session.deleted",
+        ] {
+            assert!(opencode.contains(&format!("\"{event}\"")), "{event}");
+        }
+        for unsupported in ["session.idle", "question.asked"] {
+            assert!(!opencode.contains(&format!("\"{unsupported}\"")));
+        }
+        assert!(!opencode.contains("--status"));
+        assert!(!opencode.contains("--attention"));
+
+        assert!(drift_at(&paths).unwrap().is_empty());
+        fs::remove_dir_all(paths.home).unwrap();
+    }
+
+    #[test]
     fn drift_keeps_quoted_commands_per_group_and_preserves_duplicates() {
         let document = serde_json::json!({"hooks":{"Stop":[{"hooks":[
             {"command":"'/x/bin/amux' event --agent codex --event Stop"},

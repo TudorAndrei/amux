@@ -29,7 +29,7 @@ test "$(AMUX_ROOT=/tmp "$ROOT/bin/amux" --version)" = "amux $(tr -d '\n' <"$ROOT
 
 "$ROOT/bin/amux" event --agent codex <"$ROOT/tests/fixtures/codex-permission.json"
 "$ROOT/bin/amux" event --agent claude <"$ROOT/tests/fixtures/claude-stop.json"
-"$ROOT/bin/amux" event --agent opencode <"$ROOT/tests/fixtures/opencode-idle.json"
+"$ROOT/bin/amux" event --agent opencode <"$ROOT/tests/fixtures/opencode-session-idle.json"
 "$ROOT/bin/amux" event --agent pi <"$ROOT/tests/fixtures/pi-tool-call.json"
 "$ROOT/bin/amux" event --agent codex <"$ROOT/tests/fixtures/codex-subagent.json"
 "$ROOT/bin/amux" event --agent codex <"$ROOT/tests/fixtures/codex-subagent-empty-cwd.json"

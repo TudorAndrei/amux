@@ -149,12 +149,12 @@
 
 ## Phase 15: Improve supported Pi and opencode lifecycle fidelity
 
-- [ ] Extend only signals confirmed stable in Phase 14.
-- [ ] Route them through the lifecycle policy module.
-- [ ] Add fixtures, rendered-install checks, and drift checks.
-- [ ] Test daemon and daemon-less lifecycle outcomes.
-- [ ] Preserve conservative unknown handling and document asymmetries.
-- [ ] Commit:
+- [x] Extend only signals confirmed stable in Phase 14.
+- [x] Route them through the lifecycle policy module.
+- [x] Add fixtures, rendered-install checks, and drift checks.
+- [x] Test daemon and daemon-less lifecycle outcomes.
+- [x] Preserve conservative unknown handling and document asymmetries.
+- [x] Commit:
   `feat(integrations): improve pi and opencode lifecycle fidelity`
 
 ## Verification

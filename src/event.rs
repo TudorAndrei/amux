@@ -246,6 +246,7 @@ pub fn normalize_at(input: NormalizeInput<'_>) -> (String, Record) {
             &["sessionID"],
             &["sessionId"],
             &["session", "id"],
+            &["event", "properties", "sessionID"],
             &["id"],
         ],
     );
