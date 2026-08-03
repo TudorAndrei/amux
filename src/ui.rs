@@ -41,7 +41,8 @@ impl<F: FnOnce()> Drop for RestoreGuard<F> {
 }
 
 pub fn rows(config: &Config) -> Result<String, String> {
-    let views = crate::daemon::cached_views(config)
+    let views = crate::ipc::cached_views(config)
+        .map_err(|error| error.to_string())
         .or_else(|_| state::load(config).map(|state| sessions::views(config, &state)))?;
     Ok(render_rows(&views, config.use_color))
 }
@@ -92,9 +93,10 @@ fn updates(config: Config) -> (Receiver<Vec<SessionView>>, Vec<SessionView>) {
             return;
         }
         for _ in 0..20 {
-            if let Ok(subscriber) = crate::daemon::subscribe(&config) {
-                for views in subscriber {
-                    if sender.send(views).is_err() {
+            if let Ok(subscriber) = crate::ipc::subscribe(&config) {
+                for update in subscriber {
+                    let Ok(update) = update else { return };
+                    if sender.send(update.views).is_err() {
                         return;
                     }
                 }

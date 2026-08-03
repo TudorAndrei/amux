@@ -542,6 +542,53 @@ fn daemon_adopts_an_orphaned_event_log_before_compacting() {
 
 #[test]
 #[cfg(unix)]
+fn daemon_rejection_never_falls_back_to_direct_persistence() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+
+    let state = temp_dir("daemon-rejection");
+    let listener = UnixListener::bind(state.join("amux.sock")).unwrap();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = String::new();
+        BufReader::new(stream.try_clone().unwrap())
+            .read_line(&mut request)
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&request).unwrap()["kind"],
+            "event"
+        );
+        stream
+            .write_all(br#"{"revision":0,"error":"event rejected by policy"}"#)
+            .unwrap();
+        stream.write_all(b"\n").unwrap();
+    });
+    let mut event = Command::new(env!("CARGO_BIN_EXE_amux-rs"));
+    event
+        .args(["event", "--agent", "codex", "--event", "PostToolUse"])
+        .env("AMUX_STATE_DIR", &state)
+        .env_remove("AMUX_NO_DAEMON")
+        .env_remove("TMUX")
+        .stderr(Stdio::piped())
+        .stdin(Stdio::piped());
+    let mut event = event.spawn().unwrap();
+    event
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(br#"{"session_id":"must-not-persist"}"#)
+        .unwrap();
+    let output = event.wait_with_output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("daemon rejected request"));
+    server.join().unwrap();
+    assert!(!state.join("state.json").exists());
+    assert!(!state.join("events.jsonl").exists());
+    fs::remove_dir_all(state).unwrap();
+}
+
+#[test]
+#[cfg(unix)]
 fn daemon_clear_waits_for_maintenance_and_history_stays_absent() {
     use std::io::Write;
 

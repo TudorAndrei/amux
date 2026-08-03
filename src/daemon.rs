@@ -3,16 +3,14 @@ mod maintenance;
 
 use crate::config::Config;
 use crate::event;
-use crate::ipc::{HookRequest, Request, Response};
-use crate::model::SessionView;
+use crate::ipc::{self, HookRequest, Request, Response};
 use crate::state;
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufReader, Read};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -21,7 +19,6 @@ use std::time::{Duration, Instant};
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// How long a broadcast may block before the subscriber is treated as dead.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
-const MAX_REQUEST_BYTES: u64 = 1024 * 1024;
 /// How often the daemon checks whether its own executable was replaced.
 const BINARY_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -42,10 +39,6 @@ fn would_block(error: &std::io::Error) -> bool {
             | std::io::ErrorKind::TimedOut
             | std::io::ErrorKind::Interrupted
     )
-}
-
-pub fn socket_path(config: &Config) -> PathBuf {
-    config.state_dir.join("amux.sock")
 }
 
 /// Owns the fresh file description carrying the daemon startup claim. The
@@ -100,7 +93,7 @@ struct Shared {
 pub fn run(config: Config) -> Result<(), String> {
     state::ensure_private_dir(&config)?;
     let startup_claim = acquire_startup_claim(&config)?;
-    let path = socket_path(&config);
+    let path = ipc::socket_path(&config);
     // This check must happen after acquiring the startup claim: a waiting
     // starter may have observed a stale path before the winner completed bind.
     if UnixStream::connect(&path).is_ok() {
@@ -202,15 +195,6 @@ pub fn run(config: Config) -> Result<(), String> {
     Ok(())
 }
 
-/// Write one response as a single framed line. Serializing into memory first
-/// keeps a failed write from leaving a half-decodable record on the socket.
-fn reply(stream: &mut UnixStream, response: &Response) -> Result<(), String> {
-    let mut line = serde_json::to_vec(response).map_err(|error| error.to_string())?;
-    line.push(b'\n');
-    stream.write_all(&line).map_err(|error| error.to_string())?;
-    stream.flush().map_err(|error| error.to_string())
-}
-
 fn handle(
     mut stream: UnixStream,
     config: &Config,
@@ -218,31 +202,26 @@ fn handle(
 ) -> Result<(), String> {
     let reader_stream = stream.try_clone().map_err(|error| error.to_string())?;
     let mut reader = BufReader::new(reader_stream);
-    let mut line = String::new();
-    let bytes = reader
-        .by_ref()
-        .take(MAX_REQUEST_BYTES)
-        .read_line(&mut line)
-        .map_err(|error| error.to_string())?;
-    if bytes as u64 == MAX_REQUEST_BYTES && !line.ends_with('\n') {
-        reply(
-            &mut stream,
-            &Response::error("daemon request exceeds 1 MiB"),
-        )?;
-        return Ok(());
-    }
-    let request: Request = match serde_json::from_str(&line) {
+    let request = match ipc::read_request(&mut reader) {
         Ok(request) => request,
-        Err(error) => {
-            reply(
+        Err(ipc::ServerReadError::Oversized) => {
+            ipc::write_response(
+                &mut stream,
+                &Response::error("daemon request exceeds 1 MiB"),
+            )?;
+            return Ok(());
+        }
+        Err(ipc::ServerReadError::Invalid(error)) => {
+            ipc::write_response(
                 &mut stream,
                 &Response::error(format!("invalid daemon request: {error}")),
             )?;
             return Ok(());
         }
+        Err(ipc::ServerReadError::Io(error)) => return Err(error),
     };
     match request {
-        Request::Ping => reply(
+        Request::Ping => ipc::write_response(
             &mut stream,
             &Response::ok(
                 shared
@@ -258,7 +237,7 @@ fn handle(
                 .lock()
                 .map_err(|_| "daemon state lock poisoned".to_owned())?
                 .shutdown = true;
-            reply(&mut stream, &Response::ok(0))
+            ipc::write_response(&mut stream, &Response::ok(0))
         }
         Request::Health => {
             let snapshot = shared
@@ -266,7 +245,7 @@ fn handle(
                 .map_err(|_| "daemon state lock poisoned".to_owned())?
                 .model
                 .response_snapshot();
-            reply(
+            ipc::write_response(
                 &mut stream,
                 &Response::health(snapshot.revision, snapshot.topology, snapshot.views),
             )
@@ -310,7 +289,7 @@ fn handle(
             if write.over_compact_threshold {
                 maintenance.schedule(config.clone(), retain_keys);
             }
-            reply(&mut stream, &Response::ok(revision))
+            ipc::write_response(&mut stream, &Response::ok(revision))
         }
         Request::Clear => {
             let maintenance = shared
@@ -323,7 +302,7 @@ fn handle(
                 .lock()
                 .map_err(|_| "daemon state lock poisoned".to_owned())?;
             let revision = guard.model.clear(config);
-            reply(&mut stream, &Response::ok(revision))
+            ipc::write_response(&mut stream, &Response::ok(revision))
         }
         Request::Subscribe => {
             let initial = shared
@@ -332,7 +311,7 @@ fn handle(
                 .model
                 .response_snapshot();
             let mut revision = initial.revision;
-            reply(
+            ipc::write_response(
                 &mut stream,
                 &Response::state(revision, initial.state, initial.topology, initial.views),
             )?;
@@ -388,7 +367,7 @@ fn handle(
                     }
                 };
                 if let Some(response) = response {
-                    reply(&mut stream, &response)?;
+                    ipc::write_response(&mut stream, &response)?;
                 }
             }
         }
@@ -449,114 +428,6 @@ fn attach_monitor(config: &Config, shared: &Arc<Mutex<Shared>>, server: Option<P
     });
 }
 
-pub fn send_event(config: &Config, request: HookRequest) -> Result<(), String> {
-    let mut stream = UnixStream::connect(socket_path(config)).map_err(|error| error.to_string())?;
-    serde_json::to_writer(
-        &mut stream,
-        &Request::Event {
-            request: Box::new(request),
-        },
-    )
-    .map_err(|error| error.to_string())?;
-    stream.write_all(b"\n").map_err(|error| error.to_string())?;
-    stream
-        .shutdown(std::net::Shutdown::Write)
-        .map_err(|error| error.to_string())?;
-    let mut response = String::new();
-    BufReader::new(stream)
-        .read_line(&mut response)
-        .map_err(|error| error.to_string())?;
-    let response: Response = serde_json::from_str(&response).map_err(|error| error.to_string())?;
-    response.error.map_or(Ok(()), Err)
-}
-
-/// Ask a running daemon to exit. A daemon that is not running is the desired
-/// end state, so a failed connect succeeds. `Request::Shutdown` predates the
-/// versions this needs to retire, so an older daemon understands it too.
-pub fn stop(config: &Config) -> Result<(), String> {
-    let Ok(mut stream) = UnixStream::connect(socket_path(config)) else {
-        return Ok(());
-    };
-    serde_json::to_writer(&mut stream, &Request::Shutdown).map_err(|error| error.to_string())?;
-    stream.write_all(b"\n").map_err(|error| error.to_string())?;
-    stream
-        .shutdown(std::net::Shutdown::Write)
-        .map_err(|error| error.to_string())?;
-    let mut response = String::new();
-    let _ = BufReader::new(stream).read_line(&mut response);
-    Ok(())
-}
-
-pub fn clear(config: &Config) -> Result<(), String> {
-    let mut stream = UnixStream::connect(socket_path(config)).map_err(|error| error.to_string())?;
-    serde_json::to_writer(&mut stream, &Request::Clear).map_err(|error| error.to_string())?;
-    stream.write_all(b"\n").map_err(|error| error.to_string())?;
-    stream
-        .shutdown(std::net::Shutdown::Write)
-        .map_err(|error| error.to_string())?;
-    let mut response = String::new();
-    BufReader::new(stream)
-        .read_line(&mut response)
-        .map_err(|error| error.to_string())?;
-    let response: Response = serde_json::from_str(&response).map_err(|error| error.to_string())?;
-    response.error.map_or(Ok(()), Err)
-}
-
-pub fn subscribe(config: &Config) -> Result<mpsc::Receiver<Vec<SessionView>>, String> {
-    let mut stream = UnixStream::connect(socket_path(config)).map_err(|error| error.to_string())?;
-    serde_json::to_writer(&mut stream, &Request::Subscribe).map_err(|error| error.to_string())?;
-    stream.write_all(b"\n").map_err(|error| error.to_string())?;
-    stream.flush().map_err(|error| error.to_string())?;
-    let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || {
-        let mut reader = BufReader::new(stream);
-        loop {
-            let mut line = String::new();
-            match reader.read_line(&mut line) {
-                Ok(0) | Err(_) => return,
-                Ok(_) => match serde_json::from_str::<Response>(&line) {
-                    Ok(Response {
-                        views: Some(views), ..
-                    }) => {
-                        if sender.send(views).is_err() {
-                            return;
-                        }
-                    }
-                    Ok(_) => {}
-                    Err(_) => return,
-                },
-            }
-        }
-    });
-    Ok(receiver)
-}
-
-pub fn health(config: &Config) -> Result<(u64, crate::tmux::Topology, Vec<SessionView>), String> {
-    let mut stream = UnixStream::connect(socket_path(config)).map_err(|error| error.to_string())?;
-    serde_json::to_writer(&mut stream, &Request::Health).map_err(|error| error.to_string())?;
-    stream.write_all(b"\n").map_err(|error| error.to_string())?;
-    stream
-        .shutdown(std::net::Shutdown::Write)
-        .map_err(|error| error.to_string())?;
-    let mut line = String::new();
-    BufReader::new(stream)
-        .read_line(&mut line)
-        .map_err(|error| error.to_string())?;
-    let response: Response = serde_json::from_str(&line).map_err(|error| error.to_string())?;
-    let topology = response
-        .topology
-        .ok_or_else(|| "daemon did not return monitor health".to_owned())?;
-    Ok((
-        response.revision,
-        topology,
-        response.views.unwrap_or_default(),
-    ))
-}
-
-pub fn cached_views(config: &Config) -> Result<Vec<SessionView>, String> {
-    health(config).map(|(_, _, views)| views)
-}
-
 fn context_for_pane(
     topology: &crate::tmux::Topology,
     pane_id: &str,
@@ -582,6 +453,7 @@ fn context_from_request(request: &HookRequest) -> Option<crate::event::TmuxConte
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Write};
+    use std::sync::mpsc;
 
     /// The upgrade check is only as good as this fingerprint: an install that
     /// replaces the file must read as different, and an untouched file must not.
@@ -689,7 +561,7 @@ mod tests {
         let config = subscriber_config();
         let worker = thread::spawn(move || handle(server, &config, worker_shared));
         client
-            .write_all(&vec![b'x'; MAX_REQUEST_BYTES as usize])
+            .write_all(&vec![b'x'; ipc::MAX_REQUEST_BYTES as usize])
             .unwrap();
         client.shutdown(std::net::Shutdown::Write).unwrap();
         let mut response = String::new();

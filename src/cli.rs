@@ -136,8 +136,13 @@ fn cmd_event(config: &Config, args: EventArgs) -> Result<(), String> {
         tmux_server: tmux::server_from_env(),
     };
     let written_by_daemon = if env::var_os("AMUX_NO_DAEMON").is_none() {
-        daemon::send_event(config, hook_request.clone()).is_ok()
-            || start_daemon(config).is_ok() && send_after_start(config, hook_request.clone())
+        match ipc::send_event(config, hook_request.clone()) {
+            Ok(()) => true,
+            Err(ipc::ClientError::Unavailable(_)) => {
+                start_daemon(config).is_ok() && send_after_start(config, hook_request.clone())?
+            }
+            Err(error) => return Err(error.to_string()),
+        }
     } else {
         false
     };
@@ -176,14 +181,16 @@ fn start_daemon(config: &Config) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-fn send_after_start(config: &Config, request: ipc::HookRequest) -> bool {
+fn send_after_start(config: &Config, request: ipc::HookRequest) -> Result<bool, String> {
     for _ in 0..20 {
         thread::sleep(Duration::from_millis(15));
-        if daemon::send_event(config, request.clone()).is_ok() {
-            return true;
+        match ipc::send_event(config, request.clone()) {
+            Ok(()) => return Ok(true),
+            Err(ipc::ClientError::Unavailable(_)) => {}
+            Err(error) => return Err(error.to_string()),
         }
     }
-    false
+    Ok(false)
 }
 
 fn cmd_doctor(config: &Config) -> i32 {
@@ -243,7 +250,7 @@ fn cmd_doctor(config: &Config) -> i32 {
     } else {
         println!("maintenance: ok");
     }
-    let socket = daemon::socket_path(config);
+    let socket = ipc::socket_path(config);
     if socket.exists() {
         #[cfg(unix)]
         match fs::symlink_metadata(&socket) {
@@ -262,7 +269,7 @@ fn cmd_doctor(config: &Config) -> i32 {
                 failure = true;
             }
         }
-        match daemon::health(config) {
+        match ipc::health(config) {
             Ok((revision, topology, _)) if topology.connected => println!(
                 "monitor: connected (revision {revision}, reconciled {})",
                 topology.reconciled_at
@@ -316,7 +323,8 @@ fn cmd_next_attention(config: &Config) -> Result<(), String> {
 }
 
 fn session_views(config: &Config) -> Result<Vec<model::SessionView>, String> {
-    daemon::cached_views(config)
+    ipc::cached_views(config)
+        .map_err(|error| error.to_string())
         .or_else(|_| state::load(config).map(|state| sessions::views(config, &state)))
 }
 
@@ -369,9 +377,11 @@ pub fn run() -> ExitCode {
             );
             Ok(0)
         }),
-        Commands::Clear => daemon::clear(&config)
-            .or_else(|_| state::clear(&config))
-            .map(|_| 0),
+        Commands::Clear => match ipc::clear(&config) {
+            Ok(()) => Ok(0),
+            Err(ipc::ClientError::Unavailable(_)) => state::clear(&config).map(|_| 0),
+            Err(error) => Err(error.to_string()),
+        },
         Commands::Picker { rows: false } => {
             let _ = start_daemon(&config);
             ui::run(config).map(|_| 0)
@@ -383,7 +393,9 @@ pub fn run() -> ExitCode {
             0
         }),
         Commands::NextAttention => cmd_next_attention(&config).map(|_| 0),
-        Commands::Daemon { stop: true } => daemon::stop(&config).map(|_| 0),
+        Commands::Daemon { stop: true } => ipc::stop(&config)
+            .map(|_| 0)
+            .map_err(|error| error.to_string()),
         Commands::Daemon { stop: false } => daemon::run(config).map(|_| 0),
         Commands::Doctor => Ok(cmd_doctor(&config)),
         Commands::InstallHooks(mode) => hooks::install(mode.mode()).map(|_| 0),

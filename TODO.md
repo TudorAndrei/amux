@@ -51,14 +51,14 @@
 
 ## Phase 6: Deepen IPC transport and error semantics
 
-- [ ] Move socket path, framing, decoding, and validation into `src/ipc.rs`.
-- [ ] Distinguish daemon unavailability from daemon rejection.
-- [ ] Preserve absent-daemon shutdown success and validate connected responses.
-- [ ] Return revision plus views from the subscription interface.
-- [ ] Add bounded one-shot timeouts without timing out subscriptions.
-- [ ] Consolidate malformed, oversized, large-response, disconnect, rejection,
+- [x] Move socket path, framing, decoding, and validation into `src/ipc.rs`.
+- [x] Distinguish daemon unavailability from daemon rejection.
+- [x] Preserve absent-daemon shutdown success and validate connected responses.
+- [x] Return revision plus views from the subscription interface.
+- [x] Add bounded one-shot timeouts without timing out subscriptions.
+- [x] Consolidate malformed, oversized, large-response, disconnect, rejection,
   and timeout socket tests.
-- [ ] Commit: `refactor(ipc): own framing and response validation`
+- [x] Commit: `refactor(ipc): own framing and response validation`
 
 ## Phase 7: Build one bounded durable event-intake module
 
