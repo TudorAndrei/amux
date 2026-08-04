@@ -209,6 +209,135 @@ fn tmux_command(socket_dir: &Path) -> Command {
     command
 }
 
+/// An isolated tmux server owned by a single test.
+///
+/// `Drop` kills the server and removes its socket directory, so a failed
+/// assertion or a panicking helper cannot leave the server behind. Orphans
+/// outlive the test run, reparent to init, and break every tool that refuses to
+/// act while more than one server is up — tmux-continuum, for one, stops both
+/// auto-save and auto-restore.
+#[cfg(unix)]
+struct TmuxServer {
+    tmpdir: PathBuf,
+    socket_name: String,
+}
+
+#[cfg(unix)]
+impl TmuxServer {
+    /// Starts a detached server holding one session named `session`.
+    fn start(label: &str, session: &str) -> Self {
+        sweep_orphan_tmux_servers();
+        let server = Self {
+            tmpdir: tmux_temp_dir(label),
+            socket_name: format!(
+                "amux-{label}-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ),
+        };
+        server.new_session(session);
+        server
+    }
+
+    /// Adds a session, and brings the server back after a deliberate kill.
+    fn new_session(&self, session: &str) {
+        assert!(
+            self.command()
+                .args(["new-session", "-d", "-s", session])
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+
+    /// A `tmux` invocation aimed at this server.
+    fn command(&self) -> Command {
+        let mut command = tmux_command(&self.tmpdir);
+        command.args(["-L", &self.socket_name]);
+        command
+    }
+
+    /// The socket path tmux resolved, for callers that set `$TMUX`.
+    fn socket_path(&self) -> String {
+        String::from_utf8(
+            self.command()
+                .args(["display-message", "-p", "#{socket_path}"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_owned()
+    }
+}
+
+/// Kills tmux servers left by earlier runs of this suite.
+///
+/// `TmuxServer::drop` covers a panicking test, but not a run that a signal ends
+/// — Ctrl-C, or a `cargo test` timeout. Every socket directory carries the pid
+/// that made it, so a directory whose pid is gone belongs to a dead run and its
+/// servers are safe to kill. Runs once per test binary.
+#[cfg(unix)]
+fn sweep_orphan_tmux_servers() {
+    static SWEEP: std::sync::Once = std::sync::Once::new();
+    SWEEP.call_once(|| {
+        let Ok(entries) = fs::read_dir("/tmp") else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            // `amux-{label}-{pid}-{sequence}`, as `tmux_temp_dir` builds it.
+            let Some(rest) = name.strip_prefix("amux-") else {
+                continue;
+            };
+            let mut fields = rest.rsplitn(3, '-');
+            let (Some(_sequence), Some(pid), Some(_label)) =
+                (fields.next(), fields.next(), fields.next())
+            else {
+                continue;
+            };
+            if pid.parse::<u32>().is_err() || process_is_alive(pid) {
+                continue;
+            }
+            // tmux keeps its sockets one level down, under `tmux-{uid}`.
+            for uid_dir in fs::read_dir(entry.path()).into_iter().flatten().flatten() {
+                for socket in fs::read_dir(uid_dir.path()).into_iter().flatten().flatten() {
+                    let _ = Command::new("tmux")
+                        .args([
+                            "-S".as_ref(),
+                            socket.path().as_os_str(),
+                            "kill-server".as_ref(),
+                        ])
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status();
+                }
+            }
+            let _ = fs::remove_dir_all(entry.path());
+        }
+    });
+}
+
+#[cfg(unix)]
+fn process_is_alive(pid: &str) -> bool {
+    Command::new("kill")
+        .args(["-0", pid])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+#[cfg(unix)]
+impl Drop for TmuxServer {
+    fn drop(&mut self) {
+        let _ = self.command().arg("kill-server").status();
+        let _ = fs::remove_dir_all(&self.tmpdir);
+    }
+}
+
 #[test]
 fn cli_clear_doctor_and_option_contracts_are_preserved() {
     let state = temp_dir("cli-contract");
@@ -1689,34 +1818,8 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
     let _lock = real_server_test_lock();
     use std::io::Write;
     let state = temp_dir("monitor");
-    let tmux_tmpdir = tmux_temp_dir("monitor");
-    let socket_name = format!(
-        "amux-monitor-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    );
-    assert!(
-        tmux_command(&tmux_tmpdir)
-            .args(["-L", &socket_name, "new-session", "-d", "-s", "monitor"])
-            .status()
-            .unwrap()
-            .success()
-    );
-    let socket = String::from_utf8(
-        tmux_command(&tmux_tmpdir)
-            .args([
-                "-L",
-                &socket_name,
-                "display-message",
-                "-p",
-                "#{socket_path}",
-            ])
-            .output()
-            .unwrap()
-            .stdout,
-    )
-    .unwrap();
-    let socket = socket.trim().to_owned();
+    let server = TmuxServer::start("monitor", "monitor");
+    let socket = server.socket_path();
     let daemon_log = state.join("daemon.log");
     let mut daemon = Command::new(env!("CARGO_BIN_EXE_amux-rs"));
     daemon
@@ -1731,16 +1834,9 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
     subscription.write_all(b"\n").unwrap();
     let subscription = monitor_updates(subscription, daemon_log);
     let pane = String::from_utf8(
-        tmux_command(&tmux_tmpdir)
-            .args([
-                "-S",
-                &socket,
-                "list-panes",
-                "-t",
-                "monitor",
-                "-F",
-                "#{pane_id}",
-            ])
+        server
+            .command()
+            .args(["list-panes", "-t", "monitor", "-F", "#{pane_id}"])
             .output()
             .unwrap()
             .stdout,
@@ -1809,10 +1905,9 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
     let claude_command = agent_commands.join("claude");
     fs::copy(&codex_command, &claude_command).unwrap();
     assert!(
-        tmux_command(&tmux_tmpdir)
+        server
+            .command()
             .args([
-                "-S",
-                &socket,
                 "new-session",
                 "-d",
                 "-s",
@@ -1825,10 +1920,9 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
             .success()
     );
     assert!(
-        tmux_command(&tmux_tmpdir)
+        server
+            .command()
             .args([
-                "-S",
-                &socket,
                 "split-window",
                 "-d",
                 "-t",
@@ -1849,10 +1943,9 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
             })
     });
     let panes = String::from_utf8(
-        tmux_command(&tmux_tmpdir)
+        server
+            .command()
             .args([
-                "-S",
-                &socket,
                 "list-panes",
                 "-t",
                 "agents",
@@ -1917,9 +2010,9 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
 
     // Keep a real tmux client attached to the older session, then execute the
     // command bound by the plugin and prove it selects the newest live target.
-    let mut client_command = tmux_command(&tmux_tmpdir);
+    let mut client_command = server.command();
     client_command
-        .args(["-S", &socket, "-C", "attach-session", "-t", "monitor"])
+        .args(["-C", "attach-session", "-t", "monitor"])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -1927,14 +2020,9 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
     let client_name = {
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
-            let output = tmux_command(&tmux_tmpdir)
-                .args([
-                    "-S",
-                    &socket,
-                    "list-clients",
-                    "-F",
-                    "#{client_name}|#{session_name}",
-                ])
+            let output = server
+                .command()
+                .args(["list-clients", "-F", "#{client_name}|#{session_name}"])
                 .output()
                 .unwrap();
             let clients = String::from_utf8_lossy(&output.stdout);
@@ -1964,10 +2052,9 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
         String::from_utf8_lossy(&switched.stderr)
     );
     let client_target = String::from_utf8(
-        tmux_command(&tmux_tmpdir)
+        server
+            .command()
             .args([
-                "-S",
-                &socket,
                 "display-message",
                 "-p",
                 "-c",
@@ -1984,8 +2071,9 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
     let _ = client.kill();
     let _ = client.wait();
     assert!(
-        tmux_command(&tmux_tmpdir)
-            .args(["-S", &socket, "new-window", "-d", "-t", "monitor"])
+        server
+            .command()
+            .args(["new-window", "-d", "-t", "monitor"])
             .status()
             .unwrap()
             .success()
@@ -1996,8 +2084,9 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
             .is_some_and(|rows| rows.len() >= 2)
     });
     assert!(
-        tmux_command(&tmux_tmpdir)
-            .args(["-S", &socket, "new-session", "-d", "-s", "lifecycle"])
+        server
+            .command()
+            .args(["new-session", "-d", "-s", "lifecycle"])
             .status()
             .unwrap()
             .success()
@@ -2011,15 +2100,9 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
             })
     });
     assert!(
-        tmux_command(&tmux_tmpdir)
-            .args([
-                "-S",
-                &socket,
-                "rename-session",
-                "-t",
-                "lifecycle",
-                "renamed",
-            ])
+        server
+            .command()
+            .args(["rename-session", "-t", "lifecycle", "renamed"])
             .status()
             .unwrap()
             .success()
@@ -2033,16 +2116,9 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
             })
     });
     let monitor_window = String::from_utf8(
-        tmux_command(&tmux_tmpdir)
-            .args([
-                "-S",
-                &socket,
-                "list-windows",
-                "-t",
-                "monitor",
-                "-F",
-                "#{window_id}",
-            ])
+        server
+            .command()
+            .args(["list-windows", "-t", "monitor", "-F", "#{window_id}"])
             .output()
             .unwrap()
             .stdout,
@@ -2053,16 +2129,9 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
     .unwrap()
     .to_owned();
     assert!(
-        tmux_command(&tmux_tmpdir)
-            .args([
-                "-S",
-                &socket,
-                "link-window",
-                "-s",
-                &monitor_window,
-                "-t",
-                "renamed",
-            ])
+        server
+            .command()
+            .args(["link-window", "-s", &monitor_window, "-t", "renamed"])
             .status()
             .unwrap()
             .success()
@@ -2076,8 +2145,9 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
             })
     });
     assert!(
-        tmux_command(&tmux_tmpdir)
-            .args(["-S", &socket, "kill-session", "-t", "renamed"])
+        server
+            .command()
+            .args(["kill-session", "-t", "renamed"])
             .status()
             .unwrap()
             .success()
@@ -2092,16 +2162,18 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
             })
     });
     assert!(
-        tmux_command(&tmux_tmpdir)
-            .args(["-S", &socket, "kill-server"])
+        server
+            .command()
+            .args(["kill-server"])
             .status()
             .unwrap()
             .success()
     );
     subscription.wait_for(|response| response["topology"]["connected"] == false);
     assert!(
-        tmux_command(&tmux_tmpdir)
-            .args(["-L", &socket_name, "new-session", "-d", "-s", "recovered"])
+        server
+            .command()
+            .args(["new-session", "-d", "-s", "recovered"])
             .status()
             .unwrap()
             .success()
@@ -2117,11 +2189,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
     });
     let _ = daemon_request(&state, r#"{"kind":"shutdown"}"#);
     let _ = daemon.wait();
-    let _ = tmux_command(&tmux_tmpdir)
-        .args(["-S", &socket, "kill-server"])
-        .status();
     fs::remove_dir_all(state).unwrap();
-    fs::remove_dir_all(tmux_tmpdir).unwrap();
     fs::remove_dir_all(agent_commands).unwrap();
 }
 
@@ -2129,49 +2197,32 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
 #[cfg(unix)]
 fn tmux_plugin_loads_native_picker_without_status_wiring() {
     let _lock = real_server_test_lock();
-    let tmux_tmpdir = tmux_temp_dir("plugin");
-    let socket_name = format!("amux-plugin-{}", std::process::id());
-    assert!(
-        tmux_command(&tmux_tmpdir)
-            .args(["-L", &socket_name, "new-session", "-d", "-s", "plugin"])
-            .status()
-            .unwrap()
-            .success()
-    );
+    let server = TmuxServer::start("plugin", "plugin");
     let plugin = Path::new(env!("CARGO_MANIFEST_DIR")).join("amux.tmux");
     assert!(
-        tmux_command(&tmux_tmpdir)
-            .args([
-                "-L",
-                &socket_name,
-                "set-option",
-                "-g",
-                "@amux-next-attention-key",
-                "N"
-            ])
+        server
+            .command()
+            .args(["set-option", "-g", "@amux-next-attention-key", "N"])
             .status()
             .unwrap()
             .success()
     );
-    let _ = tmux_command(&tmux_tmpdir)
-        .args([
-            "-L",
-            &socket_name,
-            "set-option",
-            "-gu",
-            "@amux-status-command",
-        ])
+    let _ = server
+        .command()
+        .args(["set-option", "-gu", "@amux-status-command"])
         .status();
     assert!(
-        tmux_command(&tmux_tmpdir)
-            .args(["-L", &socket_name, "run-shell", plugin.to_str().unwrap()])
+        server
+            .command()
+            .args(["run-shell", plugin.to_str().unwrap()])
             .status()
             .unwrap()
             .success()
     );
     let picker = String::from_utf8(
-        tmux_command(&tmux_tmpdir)
-            .args(["-L", &socket_name, "list-keys", "-T", "prefix"])
+        server
+            .command()
+            .args(["list-keys", "-T", "prefix"])
             .output()
             .unwrap()
             .stdout,
@@ -2190,21 +2241,12 @@ fn tmux_plugin_loads_native_picker_without_status_wiring() {
         "unexpected picker binding: {picker}"
     );
     assert!(picker.contains("bin/amux next-attention"));
-    let status_option = tmux_command(&tmux_tmpdir)
-        .args([
-            "-L",
-            &socket_name,
-            "show-option",
-            "-gqv",
-            "@amux-status-command",
-        ])
+    let status_option = server
+        .command()
+        .args(["show-option", "-gqv", "@amux-status-command"])
         .output()
         .unwrap();
     assert!(!String::from_utf8_lossy(&status_option.stdout).contains("bin/amux status"));
-    let _ = tmux_command(&tmux_tmpdir)
-        .args(["-L", &socket_name, "kill-server"])
-        .status();
-    fs::remove_dir_all(tmux_tmpdir).unwrap();
 }
 
 /// A response larger than the socket send buffer must arrive whole. macOS and
