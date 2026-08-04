@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.5.2](https://github.com/TudorAndrei/amux/compare/ff8fd19b47e9c848128a4bee34757456a30a0d13..v0.5.2) - 2026-08-04
+#### Bug Fixes
+- (**tests**) stop leaking tmux servers from real-server tests - ([ff8fd19](https://github.com/TudorAndrei/amux/commit/ff8fd19b47e9c848128a4bee34757456a30a0d13)) - TudorAndrei
+
+- - -
+
 ## [v0.5.1](https://github.com/TudorAndrei/amux/compare/1f158d8b11a5f68c874471a8ae67851b01350ab2..v0.5.1) - 2026-08-03
 #### Bug Fixes
 - (**picker**) target invoking tmux client - ([1f158d8](https://github.com/TudorAndrei/amux/commit/1f158d8b11a5f68c874471a8ae67851b01350ab2)) - TudorAndrei
