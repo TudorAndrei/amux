@@ -226,11 +226,15 @@ fn handle(
                 .revision(),
         ),
         Request::Shutdown => {
+            // Publish shutdown only after the reply is in the socket buffer.
+            // Otherwise the main thread can exit the process while this
+            // handler is still writing, and the client sees ConnectionReset.
+            ipc::write_acknowledgement(&mut stream, 0)?;
             shared
                 .lock()
                 .map_err(|_| "daemon state lock poisoned".to_owned())?
                 .shutdown = true;
-            ipc::write_acknowledgement(&mut stream, 0)
+            Ok(())
         }
         Request::Health => {
             let snapshot = shared
@@ -686,6 +690,31 @@ mod tests {
                 .recv_timeout(Duration::from_secs(1))
                 .expect("subscription handler should exit promptly")
                 .is_ok()
+        );
+    }
+
+    #[test]
+    fn shutdown_is_not_published_before_its_acknowledgement() {
+        let (mut client, mut server) = UnixStream::pair().unwrap();
+        client.write_all(b"{\"kind\":\"shutdown\"}\n").unwrap();
+
+        // Fill the response buffer so the acknowledgement cannot be sent. This
+        // makes the ordering observable without depending on thread timing.
+        server.set_nonblocking(true).unwrap();
+        let block = [b'x'; 16 * 1024];
+        loop {
+            match server.write(&block) {
+                Ok(_) => {}
+                Err(error) if would_block(&error) => break,
+                Err(error) => panic!("cannot fill daemon response buffer: {error}"),
+            }
+        }
+
+        let shared = shared();
+        assert!(handle(server, &subscriber_config(), Arc::clone(&shared)).is_err());
+        assert!(
+            !shared.lock().unwrap().shutdown,
+            "the daemon must stay alive when the shutdown reply was not sent"
         );
     }
 }
