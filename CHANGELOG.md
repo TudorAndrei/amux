@@ -2,6 +2,17 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.5.3](https://github.com/TudorAndrei/amux/compare/11d892c7d6d647e5c6660e0ecbe7a91819b89bce..v0.5.3) - 2026-08-05
+#### Bug Fixes
+- wait through transient monitor errors - ([6cf269d](https://github.com/TudorAndrei/amux/commit/6cf269d2ee0350d9b6874655d549f4dbd206532c)) - TudorAndrei
+#### Documentation
+- compare tmux agent tools - ([11d892c](https://github.com/TudorAndrei/amux/commit/11d892c7d6d647e5c6660e0ecbe7a91819b89bce)) - TudorAndrei
+#### Refactoring
+- drive hook adapters from one catalog - ([4ce71e7](https://github.com/TudorAndrei/amux/commit/4ce71e70c06b66e87e388edc2e457af3da72f797)) - TudorAndrei
+- isolate tests and deepen live IPC - ([85422ae](https://github.com/TudorAndrei/amux/commit/85422ae4215a4b02c5a1823fb208ae239bfe2a39)) - TudorAndrei
+
+- - -
+
 ## [v0.5.2](https://github.com/TudorAndrei/amux/compare/ff8fd19b47e9c848128a4bee34757456a30a0d13..v0.5.2) - 2026-08-04
 #### Bug Fixes
 - (**tests**) stop leaking tmux servers from real-server tests - ([ff8fd19](https://github.com/TudorAndrei/amux/commit/ff8fd19b47e9c848128a4bee34757456a30a0d13)) - TudorAndrei
