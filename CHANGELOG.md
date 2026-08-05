@@ -2,6 +2,15 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.5.4](https://github.com/TudorAndrei/amux/compare/92c043a97df7ac1944db9189b7f4eda7ef82da80..v0.5.4) - 2026-08-05
+#### Bug Fixes
+- acknowledge daemon shutdown before exit - ([4493b48](https://github.com/TudorAndrei/amux/commit/4493b4850a45e82af337f7957a60f66a065cb5db)) - TudorAndrei
+#### Refactoring
+- deepen durable state ownership - ([a76b969](https://github.com/TudorAndrei/amux/commit/a76b969744243b27f0af7f1d0069e2629e8c44fd)) - TudorAndrei
+- centralize canonical event projection - ([92c043a](https://github.com/TudorAndrei/amux/commit/92c043a97df7ac1944db9189b7f4eda7ef82da80)) - TudorAndrei
+
+- - -
+
 ## [v0.5.3](https://github.com/TudorAndrei/amux/compare/11d892c7d6d647e5c6660e0ecbe7a91819b89bce..v0.5.3) - 2026-08-05
 #### Bug Fixes
 - wait through transient monitor errors - ([6cf269d](https://github.com/TudorAndrei/amux/commit/6cf269d2ee0350d9b6874655d549f4dbd206532c)) - TudorAndrei
