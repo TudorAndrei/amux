@@ -2,7 +2,7 @@ use crate::config::Config;
 use crate::event::{self, TmuxContext};
 use crate::ipc::HookRequest;
 use crate::projection;
-use crate::state::WriteEventResult;
+use crate::state::EventCommit;
 use serde_json::{Map, Value};
 use std::io::Read;
 
@@ -31,14 +31,14 @@ pub fn persist(
     config: &Config,
     request: HookRequest,
     tmux: TmuxContext,
-) -> Result<WriteEventResult, String> {
+) -> Result<EventCommit, String> {
     let projection::ProjectedEvent {
         key,
         record,
         history,
     } = projection::project(request, tmux, event::now())?;
     let timestamp = record.updated_at;
-    crate::state::write_event(config, key, record, &history, timestamp)
+    crate::state::commit_event(config, key, record, &history, timestamp)
 }
 
 #[cfg(test)]

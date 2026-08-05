@@ -15,20 +15,12 @@ pub(super) struct Maintenance {
 
 impl Maintenance {
     pub fn schedule(&self, config: Config, retain_keys: BTreeSet<String>) {
-        self.schedule_with(move || {
-            crate::state::adopt_orphaned_log(&config)
-                .and_then(|_| crate::state::compact_events(&config, &retain_keys))
-                .and_then(|_| crate::state::clear_maintenance_diagnostic(&config))
-                .inspect_err(|error| {
-                    let _ = crate::state::write_maintenance_diagnostic(&config, error);
-                })
-        });
+        self.schedule_with(move || crate::state::maintain_event_log(&config, &retain_keys));
     }
 
     pub fn clear(&self, config: &Config) -> Result<(), String> {
         self.wait_idle()?;
-        crate::state::clear(config)?;
-        crate::state::clear_maintenance_diagnostic(config)
+        crate::state::clear(config)
     }
 
     pub fn wait_idle(&self) -> Result<(), String> {

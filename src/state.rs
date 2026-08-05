@@ -37,6 +37,16 @@ pub fn ensure_private_dir(config: &Config) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
+/// Recover durable files in their required order and return the current
+/// state for a new daemon. The daemon startup claim must be held by the caller
+/// because it also protects stale socket replacement and listener binding.
+pub fn recover_startup(config: &Config) -> Result<State, String> {
+    adopt_orphaned_log(config)?;
+    let state = load(config)?;
+    compact_events(config, &state.records.keys().cloned().collect())?;
+    load(config)
+}
+
 fn restrict_file(path: &std::path::Path) -> Result<(), String> {
     if path.exists() {
         fs::set_permissions(path, fs::Permissions::from_mode(0o600))
@@ -110,13 +120,26 @@ fn acquire(config: &Config) -> Result<Lock, String> {
     acquire_with(config, |file| file.try_lock().map_err(io::Error::from))
 }
 
-pub fn write_event(
+/// Commit one canonical projected event as one durable transaction.
+///
+/// Transaction contract:
+///
+/// - Input is one owned state key and record, one borrowed JSONL value, and
+///   the event timestamp. Projection owns all input size and value limits.
+/// - Output owns the exact state installed by the atomic rename, plus the log
+///   and maintenance decisions made during that transaction.
+/// - Success is returned only after the event log and state replacement have
+///   completed their required synchronization.
+/// - The interface is singular because one CLI or IPC request carries one
+///   event and waits for its durable acknowledgement. A batch would change
+///   lock scope and acknowledgement timing.
+pub fn commit_event(
     config: &Config,
     key: String,
     record: Record,
     event_log: &Value,
     now: i64,
-) -> Result<WriteEventResult, String> {
+) -> Result<EventCommit, String> {
     let _lock = acquire(config)?;
     restrict_file(&config.state_file())?;
     let mut state = load(config)?;
@@ -154,7 +177,8 @@ pub fn write_event(
     temporary.sync_all().map_err(|error| error.to_string())?;
     fs::rename(&temp, config.state_file()).map_err(|error| error.to_string())?;
     sync_dir(&config.state_dir)?;
-    Ok(WriteEventResult {
+    Ok(EventCommit {
+        state,
         logged: changed,
         over_compact_threshold: changed
             && config.events_per_session != 0
@@ -165,8 +189,9 @@ pub fn write_event(
     })
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct WriteEventResult {
+#[derive(Debug)]
+pub struct EventCommit {
+    pub state: State,
     pub logged: bool,
     pub over_compact_threshold: bool,
 }
@@ -257,7 +282,7 @@ fn append_event(config: &Config, event_log: &Value) -> Result<(), String> {
 /// Recover the old log after a crash between moving it aside and installing a
 /// compacted replacement. The original log predates the live log, so append it
 /// first and atomically replace the live file under the normal state lock.
-pub fn adopt_orphaned_log(config: &Config) -> Result<(), String> {
+fn adopt_orphaned_log(config: &Config) -> Result<(), String> {
     let orphan = config.compacting_events_file();
     if !orphan.exists() {
         return Ok(());
@@ -293,7 +318,7 @@ pub(crate) enum CompactionStage {
 /// Retain the most recent configured number of valid events for every live
 /// record key. The potentially long streaming pass intentionally happens with
 /// no state lock held so hooks can continue appending to a fresh log.
-pub fn compact_events(config: &Config, retain_keys: &BTreeSet<String>) -> Result<(), String> {
+fn compact_events(config: &Config, retain_keys: &BTreeSet<String>) -> Result<(), String> {
     compact_events_with(config, retain_keys, |_| Ok(()))
 }
 
@@ -479,7 +504,7 @@ fn write_lines(path: &std::path::Path, lines: &[String]) -> Result<(), String> {
     output.sync_all().map_err(|error| error.to_string())
 }
 
-pub(crate) fn write_maintenance_diagnostic(config: &Config, message: &str) -> Result<(), String> {
+fn write_maintenance_diagnostic(config: &Config, message: &str) -> Result<(), String> {
     ensure_private_dir(config)?;
     let mut output = private_writer(&config.maintenance_diagnostic_file())?;
     output
@@ -490,7 +515,7 @@ pub(crate) fn write_maintenance_diagnostic(config: &Config, message: &str) -> Re
     sync_dir(&config.state_dir)
 }
 
-pub(crate) fn clear_maintenance_diagnostic(config: &Config) -> Result<(), String> {
+fn clear_maintenance_diagnostic(config: &Config) -> Result<(), String> {
     let path = config.maintenance_diagnostic_file();
     if !path.exists() {
         return Ok(());
@@ -499,10 +524,29 @@ pub(crate) fn clear_maintenance_diagnostic(config: &Config) -> Result<(), String
     sync_dir(&config.state_dir)
 }
 
+/// Recover and compact the event log as one maintenance operation. A failure
+/// remains visible to the caller and in the diagnostic file. A later success
+/// removes the diagnostic.
+pub fn maintain_event_log(config: &Config, retain_keys: &BTreeSet<String>) -> Result<(), String> {
+    let result = adopt_orphaned_log(config)
+        .and_then(|_| compact_events(config, retain_keys))
+        .and_then(|_| clear_maintenance_diagnostic(config));
+    if let Err(error) = &result {
+        let _ = write_maintenance_diagnostic(config, error);
+    }
+    result
+}
+
 pub fn clear(config: &Config) -> Result<(), String> {
     let _lock = acquire(config)?;
     let mut removed = false;
-    for path in [config.state_file(), config.events_file()] {
+    for path in [
+        config.state_file(),
+        config.events_file(),
+        config.compacting_events_file(),
+        config.retained_events_file(),
+        config.maintenance_diagnostic_file(),
+    ] {
         if path.exists() {
             fs::remove_file(path).map_err(|error| error.to_string())?;
             removed = true;
@@ -599,21 +643,72 @@ mod tests {
     }
 
     #[test]
-    fn orphaned_log_is_adopted_without_losing_the_live_log() {
+    fn startup_recovery_adopts_old_history_and_returns_current_state() {
         let config = config(2);
-        ensure_private_dir(&config).unwrap();
-        fs::write(
-            config.compacting_events_file(),
-            format!("{}\n", line("old", 1)),
+        commit_event(
+            &config,
+            "old".to_owned(),
+            Record {
+                status: "running".to_owned(),
+                updated_at: 10,
+                ..Record::default()
+            },
+            &serde_json::json!({"key": "old", "ordinal": 1}),
+            10,
         )
         .unwrap();
-        fs::write(config.events_file(), format!("{}\n", line("live", 2))).unwrap();
-        adopt_orphaned_log(&config).unwrap();
+        fs::rename(config.events_file(), config.compacting_events_file()).unwrap();
+        commit_event(
+            &config,
+            "live".to_owned(),
+            Record {
+                status: "running".to_owned(),
+                updated_at: 11,
+                ..Record::default()
+            },
+            &serde_json::json!({"key": "live", "ordinal": 2}),
+            11,
+        )
+        .unwrap();
+
+        let recovered = recover_startup(&config).unwrap();
+
+        assert!(recovered.records.contains_key("old"));
+        assert!(recovered.records.contains_key("live"));
         assert_eq!(
-            fs::read_to_string(config.events_file()).unwrap(),
-            format!("{}\n{}\n", line("old", 1), line("live", 2))
+            serde_json::to_value(&recovered).unwrap(),
+            serde_json::to_value(load(&config).unwrap()).unwrap()
         );
+        let history = fs::read_to_string(config.events_file()).unwrap();
+        assert!(history.contains("\"ordinal\":1"));
+        assert!(history.contains("\"ordinal\":2"));
         assert!(!config.compacting_events_file().exists());
+        fs::remove_dir_all(config.state_dir).unwrap();
+    }
+
+    #[test]
+    fn startup_returns_initial_state_and_reports_invalid_json_with_its_path() {
+        let config = config(2);
+        let initial = recover_startup(&config).unwrap();
+        assert_eq!(initial.version, 1);
+        assert!(initial.records.is_empty());
+
+        ensure_private_dir(&config).unwrap();
+        fs::write(config.state_file(), "{").unwrap();
+        let error = recover_startup(&config).unwrap_err();
+        assert!(error.contains("invalid state file"));
+        assert!(error.contains(config.state_file().to_str().unwrap()));
+        fs::remove_dir_all(config.state_dir).unwrap();
+    }
+
+    #[test]
+    fn successful_maintenance_clears_an_old_diagnostic() {
+        let config = config(2);
+        write_maintenance_diagnostic(&config, "old failure").unwrap();
+
+        maintain_event_log(&config, &BTreeSet::new()).unwrap();
+
+        assert!(!config.maintenance_diagnostic_file().exists());
         fs::remove_dir_all(config.state_dir).unwrap();
     }
 
@@ -675,7 +770,7 @@ mod tests {
         ensure_private_dir(&config).unwrap();
         let contents = format!("{}\n{}\n", line("a", 1), line("a", 2));
         fs::write(config.events_file(), &contents).unwrap();
-        let written = write_event(
+        let written = commit_event(
             &config,
             "a".to_owned(),
             Record {
@@ -739,7 +834,7 @@ mod tests {
     fn locking_can_be_disabled() {
         let mut config = config(200);
         config.locking_enabled = false;
-        write_event(
+        commit_event(
             &config,
             "one".to_owned(),
             Record::default(),
@@ -835,7 +930,7 @@ mod tests {
             reason: "working".to_owned(),
             ..Record::default()
         };
-        let first = write_event(
+        let first = commit_event(
             &config,
             "codex:one".to_owned(),
             record.clone(),
@@ -843,7 +938,7 @@ mod tests {
             10,
         )
         .unwrap();
-        let second = write_event(
+        let second = commit_event(
             &config,
             "codex:one".to_owned(),
             record,
@@ -853,6 +948,11 @@ mod tests {
         .unwrap();
         assert!(first.logged);
         assert!(!second.logged);
+        assert!(second.state.records.contains_key("codex:one"));
+        assert_eq!(
+            serde_json::to_value(&second.state).unwrap(),
+            serde_json::to_value(load(&config).unwrap()).unwrap()
+        );
         assert_eq!(
             fs::read_to_string(config.events_file())
                 .unwrap()
@@ -866,7 +966,7 @@ mod tests {
     #[test]
     fn durable_state_replacement_and_clear_cover_both_directory_mutations() {
         let config = config(200);
-        write_event(
+        commit_event(
             &config,
             "codex:durable".to_owned(),
             Record {
@@ -879,10 +979,20 @@ mod tests {
         .unwrap();
         assert!(config.state_file().is_file());
         assert!(config.events_file().is_file());
+        fs::write(config.compacting_events_file(), "old history\n").unwrap();
+        fs::write(config.retained_events_file(), "retained history\n").unwrap();
+        write_maintenance_diagnostic(&config, "old failure").unwrap();
 
         clear(&config).unwrap();
-        assert!(!config.state_file().exists());
-        assert!(!config.events_file().exists());
+        for path in [
+            config.state_file(),
+            config.events_file(),
+            config.compacting_events_file(),
+            config.retained_events_file(),
+            config.maintenance_diagnostic_file(),
+        ] {
+            assert!(!path.exists(), "{} survived clear", path.display());
+        }
         // A second clear proves the no-mutation path does not require files to
         // exist while still acquiring the normal durable-state lock.
         clear(&config).unwrap();

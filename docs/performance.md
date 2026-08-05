@@ -21,6 +21,25 @@ The Rust median was 60% lower for this path. With a warm daemon, thirty event
 submissions reached its cached state in 22.8 ms p50 and 25.4 ms p95, including
 the short-lived hook client process and socket request.
 
+## Durable daemon event transaction
+
+This sample used the release binary on Darwin arm64, an isolated state
+directory, one 340-byte state record, no tmux server, one warm-up event, and
+thirty warm daemon events. The sandbox makes file synchronization slow, so the
+results are useful only as a before-and-after comparison from the same host and
+method.
+
+| Revision | State read and parse calls | Mean | p50 | p95 | Max |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Before (`92c043a`) | 2 | 364.472 ms | 364.308 ms | 375.652 ms | 383.007 ms |
+| Durable transaction | 1 | 366.574 ms | 367.193 ms | 374.359 ms | 375.260 ms |
+
+The state read counts follow the complete daemon event call path. Before the
+change, the durable commit loaded state and the daemon loaded it again before
+publication. The durable transaction returns its committed state, so the
+daemon does not do the second load. The latency samples overlap and do not show
+a latency improvement. This change makes no performance claim.
+
 ## Topology, idle work, and input responsiveness
 
 - A tmux notification is coalesced for 20 ms, then reconciled with exactly one

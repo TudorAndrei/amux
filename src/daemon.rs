@@ -113,10 +113,7 @@ pub fn run(config: Config) -> Result<(), String> {
         }
         fs::remove_file(&path).map_err(|error| error.to_string())?;
     }
-    state::adopt_orphaned_log(&config)?;
-    let mut state = state::load(&config)?;
-    state::compact_events(&config, &state.records.keys().cloned().collect())?;
-    state = state::load(&config)?;
+    let state = state::recover_startup(&config)?;
     let listener = UnixListener::bind(&path).map_err(|error| error.to_string())?;
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
         .map_err(|error| error.to_string())?;
@@ -254,15 +251,15 @@ fn handle(
             let tmux = context_for_known_pane(&shared, &request.tmux_pane)
                 .or_else(|| context_from_request(&request))
                 .unwrap_or_default();
-            let write = intake::persist(config, request, tmux)?;
+            let commit = intake::persist(config, request, tmux)?;
             let mut guard = shared
                 .lock()
                 .map_err(|_| "daemon state lock poisoned".to_owned())?;
-            let revision = guard.model.apply_event_state(config, state::load(config)?);
+            let revision = guard.model.apply_event_state(config, commit.state);
             let retain_keys = guard.model.retain_keys();
             let maintenance = guard.maintenance.clone();
             drop(guard);
-            if write.over_compact_threshold {
+            if commit.over_compact_threshold {
                 maintenance.schedule(config.clone(), retain_keys);
             }
             ipc::write_acknowledgement(&mut stream, revision)
