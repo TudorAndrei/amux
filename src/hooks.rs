@@ -35,6 +35,59 @@ impl Paths {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FileCase {
+    JsonMerge,
+    TextAsset,
+    PiRegistration {
+        settings: &'static str,
+        field: &'static str,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Adapter {
+    name: &'static str,
+    description: &'static str,
+    template: &'static str,
+    installed: &'static str,
+    file_case: FileCase,
+}
+
+const ADAPTERS: [Adapter; 4] = [
+    Adapter {
+        name: "Codex",
+        description: "Codex hooks",
+        template: "hooks/codex/hooks.json",
+        installed: ".codex/hooks.json",
+        file_case: FileCase::JsonMerge,
+    },
+    Adapter {
+        name: "Claude",
+        description: "Claude settings hooks",
+        template: "hooks/claude/settings.fragment.json",
+        installed: ".claude/settings.json",
+        file_case: FileCase::JsonMerge,
+    },
+    Adapter {
+        name: "Pi",
+        description: "Pi extension",
+        template: "hooks/pi/amux.ts",
+        installed: ".pi/agent/extensions/amux.ts",
+        file_case: FileCase::PiRegistration {
+            settings: ".pi/agent/settings.json",
+            field: "extensions",
+        },
+    },
+    Adapter {
+        name: "opencode",
+        description: "opencode plugin",
+        template: "hooks/opencode/amux.js",
+        installed: ".config/opencode/plugins/amux.js",
+        file_case: FileCase::TextAsset,
+    },
+];
+
 pub fn install(mode: Mode) -> Result<(), String> {
     install_at(&Paths::from_env()?, mode)
 }
@@ -72,64 +125,55 @@ fn drift_at(paths: &Paths) -> Result<Vec<String>, String> {
 
 fn inspect_at(paths: &Paths) -> Vec<IntegrationReport> {
     let launcher = paths.launcher();
-    let json_integrations = [
-        (
-            "Codex",
-            paths.home.join(".codex/hooks.json"),
-            paths.root.join("hooks/codex/hooks.json"),
-        ),
-        (
-            "Claude",
-            paths.home.join(".claude/settings.json"),
-            paths.root.join("hooks/claude/settings.fragment.json"),
-        ),
-    ];
-    let mut reports = Vec::new();
-    for (name, installed_path, template_path) in json_integrations {
-        let result = template_json(&template_path, &launcher).and_then(|template| {
-            read_json(&installed_path).map(|installed| drift_document(name, &template, &installed))
-        });
-        reports.push(IntegrationReport { name, result });
-    }
+    ADAPTERS
+        .iter()
+        .map(|adapter| IntegrationReport {
+            name: adapter.name,
+            result: inspect_adapter(adapter, paths, &launcher),
+        })
+        .collect()
+}
 
-    let pi_extension = paths.home.join(".pi/agent/extensions/amux.ts");
-    let pi_settings = paths.home.join(".pi/agent/settings.json");
-    let pi_result = drift_text_asset(
-        "Pi",
-        &paths.root.join("hooks/pi/amux.ts"),
-        &pi_extension,
-        &launcher,
-    )
-    .and_then(|mut drifts| {
-        let settings = read_json(&pi_settings)?;
-        let registered = settings
-            .get("extensions")
-            .and_then(Value::as_array)
-            .is_some_and(|extensions| {
+fn inspect_adapter(
+    adapter: &Adapter,
+    paths: &Paths,
+    launcher: &Path,
+) -> Result<Vec<String>, String> {
+    let template_path = paths.root.join(adapter.template);
+    let installed_path = paths.home.join(adapter.installed);
+    match adapter.file_case {
+        FileCase::JsonMerge => {
+            if !installed_path.exists() {
+                return Ok(vec![format!(
+                    "{}: installed configuration is missing",
+                    adapter.name
+                )]);
+            }
+            let template = template_json(&template_path, launcher)?;
+            let installed = read_json(&installed_path)?;
+            validate_hook_document(&installed_path, &installed)?;
+            Ok(drift_document(adapter.name, &template, &installed))
+        }
+        FileCase::TextAsset => {
+            drift_text_asset(adapter.name, &template_path, &installed_path, launcher)
+        }
+        FileCase::PiRegistration { settings, field } => {
+            let mut drifts =
+                drift_text_asset(adapter.name, &template_path, &installed_path, launcher)?;
+            let settings_path = paths.home.join(settings);
+            let settings = read_json(&settings_path)?;
+            let extensions = validate_pi_settings(&settings_path, &settings, field)?;
+            let registered = extensions.is_some_and(|extensions| {
                 extensions
                     .iter()
-                    .any(|value| value.as_str() == Some(pi_extension.to_string_lossy().as_ref()))
+                    .any(|value| value.as_str() == Some(installed_path.to_string_lossy().as_ref()))
             });
-        if !registered {
-            drifts.push("Pi: extension is not registered in settings".to_owned());
+            if !registered {
+                drifts.push("Pi: extension is not registered in settings".to_owned());
+            }
+            Ok(drifts)
         }
-        Ok(drifts)
-    });
-    reports.push(IntegrationReport {
-        name: "Pi",
-        result: pi_result,
-    });
-
-    reports.push(IntegrationReport {
-        name: "opencode",
-        result: drift_text_asset(
-            "opencode",
-            &paths.root.join("hooks/opencode/amux.js"),
-            &paths.home.join(".config/opencode/plugins/amux.js"),
-            &launcher,
-        ),
-    });
-    reports
+    }
 }
 
 fn drift_text_asset(
@@ -322,6 +366,12 @@ fn command_arguments(command: &str) -> Option<String> {
         .map(|index| command[index + " event".len()..].trim().to_owned())
 }
 
+#[derive(Debug)]
+struct AdapterActionReport {
+    name: &'static str,
+    result: Result<(), String>,
+}
+
 fn install_at(paths: &Paths, mode: Mode) -> Result<(), String> {
     let launcher = paths.launcher();
     if !launcher.is_file() {
@@ -333,70 +383,95 @@ fn install_at(paths: &Paths, mode: Mode) -> Result<(), String> {
     let launcher = launcher
         .canonicalize()
         .map_err(|error| format!("cannot resolve {}: {error}", launcher.display()))?;
-    let codex = paths.home.join(".codex/hooks.json");
-    let claude = paths.home.join(".claude/settings.json");
-    let opencode = paths.home.join(".config/opencode/plugins/amux.js");
-    let pi_extension = paths.home.join(".pi/agent/extensions/amux.ts");
-    let pi_settings = paths.home.join(".pi/agent/settings.json");
-
-    merge_hooks(
-        &codex,
-        &template_json(&paths.root.join("hooks/codex/hooks.json"), &launcher)?,
-        "Codex hooks",
-        mode,
-    )?;
-    merge_hooks(
-        &claude,
-        &template_json(
-            &paths.root.join("hooks/claude/settings.fragment.json"),
-            &launcher,
-        )?,
-        "Claude settings hooks",
-        mode,
-    )?;
-    write_template(
-        &opencode,
-        &paths.root.join("hooks/opencode/amux.js"),
-        &launcher,
-        "opencode plugin",
-        mode,
-    )?;
-    write_template(
-        &pi_extension,
-        &paths.root.join("hooks/pi/amux.ts"),
-        &launcher,
-        "Pi extension",
-        mode,
-    )?;
-    merge_pi_extension(&pi_settings, &pi_extension, mode)
+    complete_batch(install_batch(paths, &launcher, mode))
 }
 
 fn uninstall_at(paths: &Paths, mode: Mode) -> Result<(), String> {
-    let launcher = paths.launcher().to_string_lossy().into_owned();
-    remove_hooks(
-        &paths.home.join(".codex/hooks.json"),
-        &launcher,
-        "Codex hooks",
-        mode,
-    )?;
-    remove_hooks(
-        &paths.home.join(".claude/settings.json"),
-        &launcher,
-        "Claude settings hooks",
-        mode,
-    )?;
-    let pi_extension = paths.home.join(".pi/agent/extensions/amux.ts");
-    remove_pi_extension(
-        &paths.home.join(".pi/agent/settings.json"),
-        &pi_extension,
-        mode,
-    )?;
-    remove_file(
-        &paths.home.join(".config/opencode/plugins/amux.js"),
-        "opencode plugin",
-        mode,
-    )?;
-    remove_file(&pi_extension, "Pi extension", mode)
+    complete_batch(uninstall_batch(paths, mode))
+}
+
+fn install_batch(paths: &Paths, launcher: &Path, mode: Mode) -> Vec<AdapterActionReport> {
+    ADAPTERS
+        .iter()
+        .map(|adapter| AdapterActionReport {
+            name: adapter.name,
+            result: install_adapter(adapter, paths, launcher, mode),
+        })
+        .collect()
+}
+
+fn install_adapter(
+    adapter: &Adapter,
+    paths: &Paths,
+    launcher: &Path,
+    mode: Mode,
+) -> Result<(), String> {
+    let template_path = paths.root.join(adapter.template);
+    let installed_path = paths.home.join(adapter.installed);
+    match adapter.file_case {
+        FileCase::JsonMerge => merge_hooks(
+            &installed_path,
+            &template_json(&template_path, launcher)?,
+            adapter.description,
+            mode,
+        ),
+        FileCase::TextAsset => write_template(
+            &installed_path,
+            &template_path,
+            launcher,
+            adapter.description,
+            mode,
+        ),
+        FileCase::PiRegistration { settings, field } => {
+            write_template(
+                &installed_path,
+                &template_path,
+                launcher,
+                adapter.description,
+                mode,
+            )?;
+            merge_pi_extension(&paths.home.join(settings), field, &installed_path, mode)
+        }
+    }
+}
+
+fn uninstall_batch(paths: &Paths, mode: Mode) -> Vec<AdapterActionReport> {
+    ADAPTERS
+        .iter()
+        .map(|adapter| AdapterActionReport {
+            name: adapter.name,
+            result: uninstall_adapter(adapter, paths, mode),
+        })
+        .collect()
+}
+
+fn uninstall_adapter(adapter: &Adapter, paths: &Paths, mode: Mode) -> Result<(), String> {
+    let installed_path = paths.home.join(adapter.installed);
+    match adapter.file_case {
+        FileCase::JsonMerge => remove_hooks(&installed_path, adapter.description, mode),
+        FileCase::TextAsset => remove_file(&installed_path, adapter.description, mode),
+        FileCase::PiRegistration { settings, field } => {
+            remove_pi_extension(&paths.home.join(settings), field, &installed_path, mode)?;
+            remove_file(&installed_path, adapter.description, mode)
+        }
+    }
+}
+
+fn complete_batch(reports: Vec<AdapterActionReport>) -> Result<(), String> {
+    let errors = reports
+        .into_iter()
+        .filter_map(|report| {
+            report
+                .result
+                .err()
+                .map(|error| format!("{}: {error}", report.name))
+        })
+        .collect::<Vec<_>>();
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
 }
 
 fn shell_quote(path: &Path) -> String {
@@ -445,8 +520,45 @@ fn read_json(path: &Path) -> Result<Value, String> {
     serde_json::from_str(&text).map_err(|error| format!("invalid JSON {}: {error}", path.display()))
 }
 
+fn validate_hook_document(path: &Path, document: &Value) -> Result<(), String> {
+    let object = document
+        .as_object()
+        .ok_or_else(|| format!("{} must be a JSON object", path.display()))?;
+    let Some(hooks) = object.get("hooks") else {
+        return Ok(());
+    };
+    let hooks = hooks
+        .as_object()
+        .ok_or_else(|| format!("{}.hooks must be a JSON object", path.display()))?;
+    for (event, groups) in hooks {
+        if !groups.is_array() {
+            return Err(format!("{}.hooks.{event} must be an array", path.display()));
+        }
+    }
+    Ok(())
+}
+
+fn validate_pi_settings<'a>(
+    path: &Path,
+    document: &'a Value,
+    field: &str,
+) -> Result<Option<&'a Vec<Value>>, String> {
+    let object = document
+        .as_object()
+        .ok_or_else(|| format!("{} must be a JSON object", path.display()))?;
+    object
+        .get(field)
+        .map(|values| {
+            values
+                .as_array()
+                .ok_or_else(|| format!("{}.{field} must be an array", path.display()))
+        })
+        .transpose()
+}
+
 fn merge_hooks(path: &Path, fragment: &Value, name: &str, mode: Mode) -> Result<(), String> {
     let mut document = read_json(path)?;
+    validate_hook_document(path, &document)?;
     let document_object = document
         .as_object_mut()
         .ok_or_else(|| format!("{} must be a JSON object", path.display()))?;
@@ -484,16 +596,21 @@ fn merge_hooks(path: &Path, fragment: &Value, name: &str, mode: Mode) -> Result<
     write_json(path, &document, name, mode)
 }
 
-fn merge_pi_extension(path: &Path, extension: &Path, mode: Mode) -> Result<(), String> {
+fn merge_pi_extension(
+    path: &Path,
+    field: &str,
+    extension: &Path,
+    mode: Mode,
+) -> Result<(), String> {
     let mut document = read_json(path)?;
     let object = document
         .as_object_mut()
         .ok_or_else(|| format!("{} must be a JSON object", path.display()))?;
     let extensions = object
-        .entry("extensions")
+        .entry(field)
         .or_insert_with(|| Value::Array(Vec::new()))
         .as_array_mut()
-        .ok_or_else(|| format!("{}.extensions must be an array", path.display()))?;
+        .ok_or_else(|| format!("{}.{field} must be an array", path.display()))?;
     let extension = Value::String(extension.to_string_lossy().into_owned());
     if !extensions.contains(&extension) {
         extensions.push(extension);
@@ -501,23 +618,30 @@ fn merge_pi_extension(path: &Path, extension: &Path, mode: Mode) -> Result<(), S
     write_json(path, &document, "Pi settings", mode)
 }
 
-fn remove_pi_extension(path: &Path, extension: &Path, mode: Mode) -> Result<(), String> {
+fn remove_pi_extension(
+    path: &Path,
+    field: &str,
+    extension: &Path,
+    mode: Mode,
+) -> Result<(), String> {
     if !path.exists() {
         return Ok(());
     }
     let mut document = read_json(path)?;
-    if let Some(extensions) = document.get_mut("extensions").and_then(Value::as_array_mut) {
+    validate_pi_settings(path, &document, field)?;
+    if let Some(extensions) = document.get_mut(field).and_then(Value::as_array_mut) {
         let extension = extension.to_string_lossy();
         extensions.retain(|value| value.as_str() != Some(extension.as_ref()));
     }
     write_json(path, &document, "Pi settings", mode)
 }
 
-fn remove_hooks(path: &Path, _launcher: &str, name: &str, mode: Mode) -> Result<(), String> {
+fn remove_hooks(path: &Path, name: &str, mode: Mode) -> Result<(), String> {
     if !path.exists() {
         return Ok(());
     }
     let mut document = read_json(path)?;
+    validate_hook_document(path, &document)?;
     if let Some(hooks) = document.get_mut("hooks") {
         remove_matching(hooks);
         if hooks.as_object().is_some_and(|object| object.is_empty()) {
@@ -706,6 +830,83 @@ mod tests {
         }
     }
 
+    fn adapter_names<T>(reports: &[T], name: impl Fn(&T) -> &'static str) -> Vec<&'static str> {
+        reports.iter().map(name).collect()
+    }
+
+    #[test]
+    fn catalog_has_exactly_four_adapters_and_three_file_cases() {
+        assert_eq!(
+            ADAPTERS.map(|adapter| adapter.name),
+            ["Codex", "Claude", "Pi", "opencode"]
+        );
+        assert_eq!(
+            ADAPTERS.map(|adapter| adapter.file_case),
+            [
+                FileCase::JsonMerge,
+                FileCase::JsonMerge,
+                FileCase::PiRegistration {
+                    settings: ".pi/agent/settings.json",
+                    field: "extensions"
+                },
+                FileCase::TextAsset,
+            ]
+        );
+    }
+
+    #[test]
+    fn every_batch_reports_each_catalog_adapter_once() {
+        let paths = paths();
+        let inspect = inspect_at(&paths);
+        let install = install_batch(&paths, &paths.launcher(), Mode::DryRun);
+        let uninstall = uninstall_batch(&paths, Mode::DryRun);
+        let expected = vec!["Codex", "Claude", "Pi", "opencode"];
+
+        assert_eq!(adapter_names(&inspect, |report| report.name), expected);
+        assert_eq!(adapter_names(&install, |report| report.name), expected);
+        assert_eq!(adapter_names(&uninstall, |report| report.name), expected);
+        assert!(install.iter().all(|report| report.result.is_ok()));
+        assert!(uninstall.iter().all(|report| report.result.is_ok()));
+        fs::remove_dir_all(paths.home).unwrap();
+    }
+
+    #[test]
+    fn install_batch_keeps_one_bad_adapter_local() {
+        let paths = paths();
+        let codex = paths.home.join(".codex/hooks.json");
+        fs::create_dir_all(codex.parent().unwrap()).unwrap();
+        fs::write(&codex, "not JSON").unwrap();
+
+        let reports = install_batch(&paths, &paths.launcher(), Mode::Write);
+
+        assert!(reports[0].result.is_err());
+        assert!(reports[1..].iter().all(|report| report.result.is_ok()));
+        for adapter in &ADAPTERS[1..] {
+            assert!(
+                paths.home.join(adapter.installed).exists(),
+                "{}",
+                adapter.name
+            );
+        }
+        assert!(paths.home.join(".pi/agent/settings.json").exists());
+        fs::remove_dir_all(paths.home).unwrap();
+    }
+
+    #[test]
+    fn uninstall_rejects_an_invalid_pi_registration_shape() {
+        let paths = paths();
+        install_at(&paths, Mode::Write).unwrap();
+        let settings = paths.home.join(".pi/agent/settings.json");
+        fs::write(&settings, r#"{"extensions":{}}"#).unwrap();
+
+        let reports = uninstall_batch(&paths, Mode::Write);
+        let pi = reports.iter().find(|report| report.name == "Pi").unwrap();
+
+        assert!(pi.result.is_err());
+        assert!(paths.home.join(".pi/agent/extensions/amux.ts").exists());
+        fs::remove_dir_all(paths.home).unwrap();
+    }
+
     #[test]
     fn install_is_idempotent_and_uninstall_preserves_other_hooks() {
         let paths = paths();
@@ -717,15 +918,40 @@ mod tests {
         )
         .unwrap();
         install_at(&paths, Mode::Write).unwrap();
+        let first_install = ADAPTERS
+            .iter()
+            .map(|adapter| fs::read(paths.home.join(adapter.installed)).unwrap())
+            .collect::<Vec<_>>();
         install_at(&paths, Mode::Write).unwrap();
+        let second_install = ADAPTERS
+            .iter()
+            .map(|adapter| fs::read(paths.home.join(adapter.installed)).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(second_install, first_install);
         let installed: Value = serde_json::from_str(&fs::read_to_string(&codex).unwrap()).unwrap();
         assert_eq!(installed["hooks"]["Stop"].as_array().unwrap().len(), 2);
+
+        let pi_settings = paths.home.join(".pi/agent/settings.json");
+        let mut settings = read_json(&pi_settings).unwrap();
+        settings["theme"] = Value::String("foreign-theme".to_owned());
+        settings["extensions"]
+            .as_array_mut()
+            .unwrap()
+            .push(Value::String("/foreign/extension.ts".to_owned()));
+        write_json(&pi_settings, &settings, "test", Mode::Write).unwrap();
+
         uninstall_at(&paths, Mode::Write).unwrap();
         let removed: Value = serde_json::from_str(&fs::read_to_string(&codex).unwrap()).unwrap();
         assert_eq!(removed["hooks"]["Stop"].as_array().unwrap().len(), 1);
         assert_eq!(
             removed["hooks"]["Stop"][0]["hooks"][0]["command"],
             "other command"
+        );
+        let settings = read_json(&pi_settings).unwrap();
+        assert_eq!(settings["theme"], "foreign-theme");
+        assert_eq!(
+            settings["extensions"],
+            serde_json::json!(["/foreign/extension.ts"])
         );
         fs::remove_dir_all(paths.home).unwrap();
     }
@@ -755,7 +981,14 @@ mod tests {
     fn dry_run_is_read_only() {
         let paths = paths();
         install_at(&paths, Mode::DryRun).unwrap();
-        assert!(!paths.home.join(".codex/hooks.json").exists());
+        for adapter in ADAPTERS {
+            assert!(
+                !paths.home.join(adapter.installed).exists(),
+                "{}",
+                adapter.name
+            );
+        }
+        assert!(!paths.home.join(".pi/agent/settings.json").exists());
         fs::remove_dir_all(paths.home).unwrap();
     }
 
