@@ -9,6 +9,17 @@ Initial scope:
 - Surface agents that need user attention.
 - Provide a live tmux picker integration.
 
+## Comparison
+
+| Project | Main purpose | Interface | Input |
+| --- | --- | --- | --- |
+| **amux** | Attention routing | Popup picker | Hooks |
+| [OpenSessions][opensessions] | Session management | Sidebar | Scanners/API |
+| [tmux-agent-sidebar][agent-sidebar] | Pane and worktree control | Sidebar | Hooks |
+
+[opensessions]: https://github.com/Ataraxy-Labs/opensessions
+[agent-sidebar]: https://github.com/hiroppy/tmux-agent-sidebar
+
 ## State Model
 
 Agent hooks call:
