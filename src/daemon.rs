@@ -11,7 +11,7 @@ use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -21,6 +21,10 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 /// How often the daemon checks whether its own executable was replaced.
 const BINARY_CHECK_INTERVAL: Duration = Duration::from_secs(5);
+/// How long an event waits for the monitor publication that can identify its pane.
+const MONITOR_CONTEXT_TIMEOUT: Duration = Duration::from_secs(1);
+
+type MonitorUpdates = Arc<(Mutex<u64>, Condvar)>;
 
 /// Size and mtime are enough to notice an upgrade: installs replace the file
 /// rather than editing it in place.
@@ -86,6 +90,7 @@ struct Shared {
     shutdown: bool,
     monitor_server: Option<PathBuf>,
     monitor_stop: Option<Arc<AtomicBool>>,
+    monitor_updates: MonitorUpdates,
     maintenance: maintenance::Maintenance,
 }
 
@@ -123,6 +128,7 @@ pub fn run(config: Config) -> Result<(), String> {
         shutdown: false,
         monitor_server: None,
         monitor_stop: None,
+        monitor_updates: Arc::new((Mutex::new(0), Condvar::new())),
         maintenance: maintenance::Maintenance::default(),
     }));
     attach_monitor(&config, &shared, crate::tmux::server_from_env());
@@ -336,9 +342,10 @@ fn handle(
     }
 }
 
-/// A just-started monitor may not have published its initial snapshot when the
-/// hook that attached it arrives. Wait briefly for that in-memory snapshot; this
-/// is still daemon-local and never reintroduces per-hook tmux subprocesses.
+/// A just-started monitor can publish a transient error before its first useful
+/// snapshot. Wait through monitor publications until the pane appears or the
+/// bounded deadline expires. This stays daemon-local and does not add per-hook
+/// tmux subprocesses.
 fn context_for_known_pane(
     shared: &Arc<Mutex<Shared>>,
     pane_id: &str,
@@ -346,16 +353,35 @@ fn context_for_known_pane(
     if pane_id.is_empty() {
         return None;
     }
-    for attempt in 0..10 {
+    let updates = shared.lock().ok()?.monitor_updates.clone();
+    let deadline = Instant::now() + MONITOR_CONTEXT_TIMEOUT;
+    let mut observed = *updates.0.lock().ok()?;
+    let (revision, changed) = &*updates;
+    loop {
         let topology = shared.lock().ok()?.model.topology().clone();
         if let Some(context) = context_for_pane(&topology, pane_id) {
             return Some(context);
         }
-        if attempt != 9 {
-            thread::sleep(Duration::from_millis(10));
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return None;
+        }
+        let current = revision.lock().ok()?;
+        if *current != observed {
+            observed = *current;
+            continue;
+        }
+        let (current, timeout) = changed
+            .wait_timeout_while(current, remaining, |revision| *revision == observed)
+            .ok()?;
+        observed = *current;
+        let timed_out = timeout.timed_out();
+        drop(current);
+        if timed_out {
+            let topology = shared.lock().ok()?.model.topology().clone();
+            return context_for_pane(&topology, pane_id);
         }
     }
-    None
 }
 
 fn attach_monitor(config: &Config, shared: &Arc<Mutex<Shared>>, server: Option<PathBuf>) {
@@ -382,12 +408,33 @@ fn attach_monitor(config: &Config, shared: &Arc<Mutex<Shared>>, server: Option<P
     let shared_for_monitor = Arc::clone(shared);
     let config_for_monitor = config.clone();
     crate::tmux::spawn(stop, Some(server.clone()), move |topology| {
-        if let Ok(mut guard) = shared_for_monitor.lock()
-            && guard.monitor_server.as_ref() == Some(&server)
-        {
-            guard.model.apply_topology(&config_for_monitor, topology);
-        }
+        publish_monitor_topology(&config_for_monitor, &shared_for_monitor, &server, topology);
     });
+}
+
+fn publish_monitor_topology(
+    config: &Config,
+    shared: &Arc<Mutex<Shared>>,
+    server: &std::path::Path,
+    topology: crate::tmux::Topology,
+) {
+    let updates = {
+        let Ok(mut guard) = shared.lock() else {
+            return;
+        };
+        if guard.monitor_server.as_deref() != Some(server) {
+            return;
+        }
+        guard.model.apply_topology(config, topology);
+        guard.monitor_updates.clone()
+    };
+    let (revision, changed) = &*updates;
+    if let Ok(mut revision) = revision.lock() {
+        *revision = revision
+            .checked_add(1)
+            .expect("monitor publication revision exhausted");
+        changed.notify_all();
+    }
 }
 
 fn context_for_pane(
@@ -449,6 +496,7 @@ mod tests {
             shutdown: false,
             monitor_server: None,
             monitor_stop: None,
+            monitor_updates: Arc::new((Mutex::new(0), Condvar::new())),
             maintenance: maintenance::Maintenance::default(),
         }))
     }
@@ -465,6 +513,48 @@ mod tests {
             hide_subagents: true,
             use_color: false,
         }
+    }
+
+    #[test]
+    fn event_context_waits_through_monitor_errors_for_a_snapshot() {
+        let shared = shared();
+        let server = PathBuf::from("/tmp/amux-test-monitor.sock");
+        shared.lock().unwrap().monitor_server = Some(server.clone());
+        let publisher = Arc::clone(&shared);
+        let config = subscriber_config();
+        let worker = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            publish_monitor_topology(
+                &config,
+                &publisher,
+                &server,
+                crate::tmux::Topology {
+                    error: "tmux is not ready".to_owned(),
+                    ..crate::tmux::Topology::default()
+                },
+            );
+            thread::sleep(Duration::from_millis(300));
+            publish_monitor_topology(
+                &config,
+                &publisher,
+                &server,
+                crate::tmux::Topology {
+                    panes: vec![crate::tmux::Pane {
+                        session: "monitor".to_owned(),
+                        window: "@1".to_owned(),
+                        pane: "%0".to_owned(),
+                        ..crate::tmux::Pane::default()
+                    }],
+                    connected: true,
+                    ..crate::tmux::Topology::default()
+                },
+            );
+        });
+
+        let context = context_for_known_pane(&shared, "%0");
+
+        worker.join().unwrap();
+        assert_eq!(context.unwrap().session, "monitor");
     }
 
     /// A broadcast larger than the socket buffer must arrive as one intact

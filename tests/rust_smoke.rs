@@ -1851,7 +1851,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
     let mut subscription = connect_daemon(&state.join("amux.sock"));
     subscription.write_all(br#"{"kind":"subscribe"}"#).unwrap();
     subscription.write_all(b"\n").unwrap();
-    let subscription = monitor_updates(subscription, daemon_log, state.clone());
+    let subscription = monitor_updates(subscription, daemon_log.clone(), state.clone());
     let pane = String::from_utf8(
         server
             .command()
@@ -1900,7 +1900,9 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
                 record["agent"] == "codex"
                     && record["tmux_session"] == "monitor"
                     && record["tmux_pane"] == pane.trim()
-            })
+            }),
+        "records: {records}\n{}",
+        fs::read_to_string(&daemon_log).unwrap_or_default()
     );
     let agent_commands = temp_dir("monitor-agents");
     let agent_source = agent_commands.join("agent.rs");
