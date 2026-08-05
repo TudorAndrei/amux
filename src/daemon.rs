@@ -3,7 +3,7 @@ mod maintenance;
 
 use crate::config::Config;
 use crate::intake;
-use crate::ipc::{self, HookRequest, Request, Response};
+use crate::ipc::{self, HookRequest, Request};
 use crate::state;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, Read};
@@ -81,7 +81,6 @@ fn remove_owned_socket(path: &std::path::Path, owned: SocketIdentity) {
     }
 }
 
-#[derive(Clone)]
 struct Shared {
     model: live_model::LiveModel,
     shutdown: bool,
@@ -205,49 +204,42 @@ fn handle(
     let request = match ipc::read_request(&mut reader) {
         Ok(request) => request,
         Err(ipc::ServerReadError::Oversized) => {
-            ipc::write_response(
-                &mut stream,
-                &Response::error("daemon request exceeds 1 MiB"),
-            )?;
+            ipc::write_rejection(&mut stream, "daemon request exceeds 1 MiB")?;
             return Ok(());
         }
         Err(ipc::ServerReadError::Invalid(error)) => {
-            ipc::write_response(
-                &mut stream,
-                &Response::error(format!("invalid daemon request: {error}")),
-            )?;
+            ipc::write_rejection(&mut stream, format!("invalid daemon request: {error}"))?;
             return Ok(());
         }
         Err(ipc::ServerReadError::Io(error)) => return Err(error),
     };
     match request {
-        Request::Ping => ipc::write_response(
+        Request::Ping => ipc::write_acknowledgement(
             &mut stream,
-            &Response::ok(
-                shared
-                    .lock()
-                    .map_err(|_| "daemon state lock poisoned".to_owned())?
-                    .model
-                    .response_snapshot()
-                    .revision,
-            ),
+            shared
+                .lock()
+                .map_err(|_| "daemon state lock poisoned".to_owned())?
+                .model
+                .revision(),
         ),
         Request::Shutdown => {
             shared
                 .lock()
                 .map_err(|_| "daemon state lock poisoned".to_owned())?
                 .shutdown = true;
-            ipc::write_response(&mut stream, &Response::ok(0))
+            ipc::write_acknowledgement(&mut stream, 0)
         }
         Request::Health => {
             let snapshot = shared
                 .lock()
                 .map_err(|_| "daemon state lock poisoned".to_owned())?
                 .model
-                .response_snapshot();
-            ipc::write_response(
+                .health_snapshot();
+            ipc::write_health(
                 &mut stream,
-                &Response::health(snapshot.revision, snapshot.topology, snapshot.views),
+                snapshot.revision,
+                snapshot.topology,
+                snapshot.views,
             )
         }
         Request::Event { request } => {
@@ -267,7 +259,7 @@ fn handle(
             if write.over_compact_threshold {
                 maintenance.schedule(config.clone(), retain_keys);
             }
-            ipc::write_response(&mut stream, &Response::ok(revision))
+            ipc::write_acknowledgement(&mut stream, revision)
         }
         Request::Clear => {
             let maintenance = shared
@@ -280,19 +272,17 @@ fn handle(
                 .lock()
                 .map_err(|_| "daemon state lock poisoned".to_owned())?;
             let revision = guard.model.clear(config);
-            ipc::write_response(&mut stream, &Response::ok(revision))
+            ipc::write_acknowledgement(&mut stream, revision)
         }
         Request::Subscribe => {
             let initial = shared
                 .lock()
                 .map_err(|_| "daemon state lock poisoned".to_owned())?
                 .model
-                .response_snapshot();
+                .subscription_update(None)
+                .expect("a new subscriber always receives the current revision");
             let mut revision = initial.revision;
-            ipc::write_response(
-                &mut stream,
-                &Response::state(revision, initial.state, initial.topology, initial.views),
-            )?;
+            ipc::write_subscription(&mut stream, revision, initial.views)?;
             stream
                 .set_write_timeout(Some(WRITE_TIMEOUT))
                 .map_err(|error| error.to_string())?;
@@ -331,21 +321,15 @@ fn handle(
                     if guard.shutdown {
                         return Ok(());
                     }
-                    let snapshot = guard.model.response_snapshot();
-                    if snapshot.revision == revision {
-                        None
+                    if let Some(update) = guard.model.subscription_update(Some(revision)) {
+                        revision = update.revision;
+                        Some(update)
                     } else {
-                        revision = snapshot.revision;
-                        Some(Response::state(
-                            revision,
-                            snapshot.state,
-                            snapshot.topology,
-                            snapshot.views,
-                        ))
+                        None
                     }
                 };
-                if let Some(response) = response {
-                    ipc::write_response(&mut stream, &response)?;
+                if let Some(update) = response {
+                    ipc::write_subscription(&mut stream, update.revision, update.views)?;
                 }
             }
         }
@@ -501,23 +485,33 @@ mod tests {
         let mut initial = String::new();
         reader.read_line(&mut initial).unwrap();
         assert_eq!(
-            serde_json::from_str::<Response>(&initial).unwrap().revision,
+            serde_json::from_str::<serde_json::Value>(&initial).unwrap()["revision"],
             0
         );
         {
             let mut guard = published.lock().unwrap();
-            let mut state = guard.model.response_snapshot().state;
-            for index in 0..2_000 {
-                state.records.insert(
-                    format!("codex:session-{index}"),
-                    crate::model::Record {
-                        agent: "codex".to_owned(),
+            let topology = crate::tmux::Topology {
+                sessions: (0..2_000)
+                    .map(|index| crate::tmux::TmuxSession {
+                        id: format!("${index}"),
+                        name: format!("session-{index}"),
+                        last_attached: index,
+                        attached: true,
+                    })
+                    .collect(),
+                panes: (0..2_000)
+                    .map(|index| crate::tmux::Pane {
+                        session: format!("session-{index}"),
+                        pane: format!("%{index}"),
+                        command: "codex".to_owned(),
                         cwd: "/tmp/amux-subscriber-broadcast".to_owned(),
-                        ..crate::model::Record::default()
-                    },
-                );
-            }
-            guard.model.apply_event_state(&subscriber_config(), state);
+                        ..crate::tmux::Pane::default()
+                    })
+                    .collect(),
+                connected: true,
+                ..crate::tmux::Topology::default()
+            };
+            guard.model.apply_topology(&subscriber_config(), topology);
         }
         let mut update = String::new();
         reader.read_line(&mut update).unwrap();
@@ -526,9 +520,12 @@ mod tests {
             "the broadcast should exceed a socket buffer: {} bytes",
             update.len()
         );
-        let update: Response = serde_json::from_str(&update).expect("a complete broadcast");
-        assert_eq!(update.revision, 1);
-        assert_eq!(update.state.unwrap().records.len(), 2_000);
+        let update: serde_json::Value =
+            serde_json::from_str(&update).expect("a complete broadcast");
+        assert_eq!(update["revision"], 1);
+        assert_eq!(update["views"].as_array().unwrap().len(), 2_000);
+        assert!(update.get("state").is_none());
+        assert!(update.get("topology").is_none());
     }
 
     #[test]
@@ -544,11 +541,12 @@ mod tests {
         client.shutdown(std::net::Shutdown::Write).unwrap();
         let mut response = String::new();
         BufReader::new(client).read_line(&mut response).unwrap();
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
         assert!(
-            serde_json::from_str::<Response>(&response)
+            response["error"]
+                .as_str()
                 .unwrap()
-                .error
-                .is_some_and(|error| error.contains("exceeds 1 MiB"))
+                .contains("exceeds 1 MiB")
         );
         assert!(worker.join().unwrap().is_ok());
 
@@ -559,9 +557,7 @@ mod tests {
         let mut response = String::new();
         BufReader::new(client).read_line(&mut response).unwrap();
         assert_eq!(
-            serde_json::from_str::<Response>(&response)
-                .unwrap()
-                .revision,
+            serde_json::from_str::<serde_json::Value>(&response).unwrap()["revision"],
             0
         );
         assert!(worker.join().unwrap().is_ok());
@@ -593,7 +589,7 @@ mod tests {
                 .read_line(&mut initial)
                 .unwrap();
             assert_eq!(
-                serde_json::from_str::<Response>(&initial).unwrap().revision,
+                serde_json::from_str::<serde_json::Value>(&initial).unwrap()["revision"],
                 0
             );
         }

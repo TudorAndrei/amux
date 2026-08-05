@@ -22,6 +22,18 @@ run = "cargo build --bin amux-rs"
 sources = ["Cargo.toml", "Cargo.lock", "src/**/*.rs"]
 outputs = ["target/debug/amux-rs"]
 
+[tasks.test]
+description = "Run the full test suite in Docker locally and natively in CI"
+run = "bash tests/run.sh"
+
+[tasks.test-container]
+description = "Run the full test suite in an isolated Docker container"
+run = "AMUX_TEST_RUNTIME=container bash tests/run.sh"
+
+[tasks.test-native]
+description = "Run the full test suite on the host for explicit platform debugging"
+run = "AMUX_TEST_RUNTIME=native bash tests/run.sh"
+
 [tasks.package]
 description = "Build a release archive for the current host"
 run = '''

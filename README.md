@@ -159,6 +159,19 @@ mise run package
 hk check
 ```
 
+Local tests run in Docker by default. This keeps all real tmux servers and
+sockets outside the host tmux process and socket area. Docker Desktop or Docker
+Engine is required for `mise run test` and the test part of `hk check`.
+
+```bash
+mise run test
+mise run test-container
+```
+
+Use `mise run test-native` only for explicit host-platform debugging. Native
+tests can start real tmux servers on the current machine. GitHub Actions uses
+this native path on disposable macOS and Linux runners.
+
 The tmux plugin deliberately never compiles Rust on demand. TPM downloads a
 prebuilt release asset on installation and whenever its checkout version needs
 a matching binary.
@@ -190,7 +203,7 @@ upgrade, run `bin/amux install-hooks --write` to install the current mappings.
 ## Development
 
 ```bash
-tests/smoke.sh
+mise run test
 hk check
 ```
 

@@ -33,22 +33,13 @@ local verification = new Mapping<String, Step> {
   ["conventional-commits"] {
     check = "cog check --from-latest-tag"
   }
-  ["cargo-test"] {
+  ["test-suite"] {
     exclusive = true
-    check = "cargo test --all-features"
-  }
-  ["smoke"] {
-    exclusive = true
-    depends = List("cargo-test")
-    check = """
-cargo build --bin amux-rs
-bash tests/smoke.sh
-bash tests/tpm-bootstrap.sh
-"""
+    check = "mise run test"
   }
   ["license-notices"] {
     exclusive = true
-    depends = List("smoke")
+    depends = List("test-suite")
     check = "mise run licenses-check"
   }
   ["package-check"] {

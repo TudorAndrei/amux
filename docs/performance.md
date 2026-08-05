@@ -1,8 +1,9 @@
 # Native Runtime Measurements
 
-These are release-build measurements recorded on Darwin arm64 with Rust
-1.97.1. They are descriptive rather than CI thresholds: terminal, filesystem,
-and tmux-server load all materially affect the numbers.
+Unless a section says otherwise, these are release-build measurements recorded
+on Darwin arm64 with Rust 1.97.1. They are descriptive rather than CI
+thresholds: terminal, filesystem, and tmux-server load all materially affect
+the numbers.
 
 ## Direct hook persistence
 
@@ -38,6 +39,27 @@ The figures above compare the former shell path with equivalent native work.
 They intentionally do not treat tmux's own status redraw interval or terminal
 paint timing as an amux latency measurement.
 
+## Live subscription data
+
+The `live_model::measures_idle_clones_and_subscription_bytes` test uses 100
+sessions, 200 panes, and 200 records. Twenty checks represent one idle second at
+the 50 ms subscription interval. Byte counts use the exact newline-delimited
+JSON encoding and do not depend on compiler optimization.
+
+| Shape | State clones | Topology clones | View clones | Snapshot B | Wire B |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Legacy state + topology + views | 20 | 20 | 20 | 131,206 | 131,251 |
+| Revision + views | 0 | 0 | 0 | 61,011 | 61,035 |
+
+An unchanged check now copies no model data. A changed revision sends 70,216
+fewer bytes for this workload, a measured 53.5% reduction. Run the measurement
+with:
+
+```bash
+mise run test-container -- cargo test --lib \
+  measures_idle_clones_and_subscription_bytes -- --nocapture
+```
+
 ## Session projection cost
 
 The `sessions::views_from` measurement test builds 100 sessions, 200 panes, and
@@ -47,7 +69,7 @@ all session views in **1.47 ms** in the Rust unit-test build on Darwin arm64
 as premature. Run it with:
 
 ```bash
-cargo test --lib \
+mise run test-container -- cargo test --lib \
   projection_at_100_sessions_200_panes_200_records_is_measured -- --nocapture
 ```
 

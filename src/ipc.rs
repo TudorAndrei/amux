@@ -1,5 +1,6 @@
-use crate::model::{SessionView, State};
+use crate::model::SessionView;
 use crate::tmux::Topology;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fmt;
@@ -40,55 +41,31 @@ pub struct HookRequest {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct Response {
+#[serde(deny_unknown_fields)]
+struct Acknowledgement {
     pub revision: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub state: Option<State>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub topology: Option<Topology>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub views: Option<Vec<SessionView>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
 }
 
-impl Response {
-    pub fn ok(revision: u64) -> Self {
-        Self {
-            revision,
-            state: None,
-            topology: None,
-            views: None,
-            error: None,
-        }
-    }
-    pub fn error(message: impl Into<String>) -> Self {
-        Self {
-            revision: 0,
-            state: None,
-            topology: None,
-            views: None,
-            error: Some(message.into()),
-        }
-    }
-    pub fn state(revision: u64, state: State, topology: Topology, views: Vec<SessionView>) -> Self {
-        Self {
-            revision,
-            state: Some(state),
-            topology: Some(topology),
-            views: Some(views),
-            error: None,
-        }
-    }
-    pub fn health(revision: u64, topology: Topology, views: Vec<SessionView>) -> Self {
-        Self {
-            revision,
-            state: None,
-            topology: Some(topology),
-            views: Some(views),
-            error: None,
-        }
-    }
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct HealthResponse {
+    revision: u64,
+    topology: Topology,
+    views: Vec<SessionView>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Rejection {
+    revision: u64,
+    error: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum WireResult<T> {
+    Success(T),
+    Rejected(Rejection),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -109,6 +86,7 @@ impl fmt::Display for ClientError {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SubscriptionUpdate {
     pub revision: u64,
     pub views: Vec<SessionView>,
@@ -126,23 +104,29 @@ fn protocol(error: impl ToString) -> ClientError {
     ClientError::Protocol(error.to_string())
 }
 
-fn validate_response(response: Response) -> Result<Response, ClientError> {
-    match response.error {
-        Some(error) => Err(ClientError::Rejected(error)),
-        None => Ok(response),
+fn decode_response<T: DeserializeOwned>(line: &str) -> Result<T, ClientError> {
+    match serde_json::from_str::<WireResult<T>>(line).map_err(protocol)? {
+        WireResult::Success(response) => Ok(response),
+        WireResult::Rejected(Rejection { revision: 0, error }) => Err(ClientError::Rejected(error)),
+        WireResult::Rejected(Rejection { revision, .. }) => Err(ClientError::Protocol(format!(
+            "rejection response used nonzero revision {revision}"
+        ))),
     }
 }
 
-fn one_shot(config: &crate::config::Config, request: &Request) -> Result<Response, ClientError> {
+fn one_shot<T: DeserializeOwned>(
+    config: &crate::config::Config,
+    request: &Request,
+) -> Result<T, ClientError> {
     let stream = UnixStream::connect(socket_path(config)).map_err(unavailable)?;
     one_shot_stream(stream, request, ONE_SHOT_TIMEOUT)
 }
 
-fn one_shot_stream(
+fn one_shot_stream<T: DeserializeOwned>(
     mut stream: UnixStream,
     request: &Request,
     timeout: Duration,
-) -> Result<Response, ClientError> {
+) -> Result<T, ClientError> {
     stream.set_read_timeout(Some(timeout)).map_err(protocol)?;
     stream.set_write_timeout(Some(timeout)).map_err(protocol)?;
     serde_json::to_writer(&mut stream, request).map_err(protocol)?;
@@ -159,12 +143,11 @@ fn one_shot_stream(
             "daemon disconnected before a response".to_owned(),
         ));
     }
-    let response = serde_json::from_str(&line).map_err(protocol)?;
-    validate_response(response)
+    decode_response(&line)
 }
 
 pub fn send_event(config: &crate::config::Config, request: HookRequest) -> Result<(), ClientError> {
-    one_shot(
+    one_shot::<Acknowledgement>(
         config,
         &Request::Event {
             request: Box::new(request),
@@ -174,11 +157,11 @@ pub fn send_event(config: &crate::config::Config, request: HookRequest) -> Resul
 }
 
 pub fn clear(config: &crate::config::Config) -> Result<(), ClientError> {
-    one_shot(config, &Request::Clear).map(|_| ())
+    one_shot::<Acknowledgement>(config, &Request::Clear).map(|_| ())
 }
 
 pub fn stop(config: &crate::config::Config) -> Result<(), ClientError> {
-    match one_shot(config, &Request::Shutdown) {
+    match one_shot::<Acknowledgement>(config, &Request::Shutdown) {
         Ok(_) | Err(ClientError::Unavailable(_)) => Ok(()),
         Err(error) => Err(error),
     }
@@ -187,14 +170,8 @@ pub fn stop(config: &crate::config::Config) -> Result<(), ClientError> {
 pub fn health(
     config: &crate::config::Config,
 ) -> Result<(u64, Topology, Vec<SessionView>), ClientError> {
-    let response = one_shot(config, &Request::Health)?;
-    let topology = response
-        .topology
-        .ok_or_else(|| ClientError::Protocol("health response omitted topology".to_owned()))?;
-    let views = response
-        .views
-        .ok_or_else(|| ClientError::Protocol("health response omitted views".to_owned()))?;
-    Ok((response.revision, topology, views))
+    let response = one_shot::<HealthResponse>(config, &Request::Health)?;
+    Ok((response.revision, response.topology, response.views))
 }
 
 pub fn cached_views(config: &crate::config::Config) -> Result<Vec<SessionView>, ClientError> {
@@ -241,34 +218,18 @@ fn subscription_stream(
                     "daemon subscription disconnected".to_owned(),
                 )),
                 Err(error) => Err(protocol(error)),
-                Ok(_) => serde_json::from_str::<Response>(&line)
-                    .map_err(protocol)
-                    .and_then(validate_response)
-                    .and_then(|response| {
-                        response
-                            .views
-                            .map(|views| SubscriptionUpdate {
-                                revision: response.revision,
-                                views,
-                            })
-                            .ok_or_else(|| {
-                                ClientError::Protocol(
-                                    "subscription response omitted views".to_owned(),
-                                )
-                            })
-                    })
-                    .and_then(|update| {
-                        if last_revision.is_some_and(|revision| update.revision <= revision) {
-                            Err(ClientError::Protocol(format!(
-                                "subscription revision {} did not advance past {}",
-                                update.revision,
-                                last_revision.unwrap_or_default()
-                            )))
-                        } else {
-                            last_revision = Some(update.revision);
-                            Ok(update)
-                        }
-                    }),
+                Ok(_) => decode_response::<SubscriptionUpdate>(&line).and_then(|update| {
+                    if last_revision.is_some_and(|revision| update.revision <= revision) {
+                        Err(ClientError::Protocol(format!(
+                            "subscription revision {} did not advance past {}",
+                            update.revision,
+                            last_revision.unwrap_or_default()
+                        )))
+                    } else {
+                        last_revision = Some(update.revision);
+                        Ok(update)
+                    }
+                }),
             };
             let closed = result.is_err();
             if sender.send(result).is_err() || closed {
@@ -299,19 +260,59 @@ pub(crate) fn read_request(reader: &mut impl BufRead) -> Result<Request, ServerR
     serde_json::from_str(&line).map_err(|error| ServerReadError::Invalid(error.to_string()))
 }
 
-pub(crate) fn write_response(stream: &mut UnixStream, response: &Response) -> Result<(), String> {
+fn write_response(stream: &mut UnixStream, response: &impl Serialize) -> Result<(), String> {
     let mut line = serde_json::to_vec(response).map_err(|error| error.to_string())?;
     line.push(b'\n');
     stream.write_all(&line).map_err(|error| error.to_string())?;
     stream.flush().map_err(|error| error.to_string())
 }
 
+pub(crate) fn write_acknowledgement(stream: &mut UnixStream, revision: u64) -> Result<(), String> {
+    write_response(stream, &Acknowledgement { revision })
+}
+
+pub(crate) fn write_health(
+    stream: &mut UnixStream,
+    revision: u64,
+    topology: Topology,
+    views: Vec<SessionView>,
+) -> Result<(), String> {
+    write_response(
+        stream,
+        &HealthResponse {
+            revision,
+            topology,
+            views,
+        },
+    )
+}
+
+pub(crate) fn write_subscription(
+    stream: &mut UnixStream,
+    revision: u64,
+    views: Vec<SessionView>,
+) -> Result<(), String> {
+    write_response(stream, &SubscriptionUpdate { revision, views })
+}
+
+pub(crate) fn write_rejection(
+    stream: &mut UnixStream,
+    message: impl Into<String>,
+) -> Result<(), String> {
+    write_response(
+        stream,
+        &Rejection {
+            revision: 0,
+            error: message.into(),
+        },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::Config;
-    use crate::model::{Record, SessionView};
-    use std::collections::BTreeMap;
+    use crate::model::SessionView;
     use std::fs;
     use std::os::unix::net::UnixListener;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -338,13 +339,22 @@ mod tests {
         }
     }
 
-    fn response_pair(
+    fn acknowledgement_pair(
         serve: impl FnOnce(UnixStream) + Send + 'static,
         timeout: Duration,
-    ) -> Result<Response, ClientError> {
+    ) -> Result<Acknowledgement, ClientError> {
         let (client, server) = UnixStream::pair().unwrap();
         thread::spawn(move || serve(server));
         one_shot_stream(client, &Request::Ping, timeout)
+    }
+
+    fn health_pair(
+        serve: impl FnOnce(UnixStream) + Send + 'static,
+        timeout: Duration,
+    ) -> Result<HealthResponse, ClientError> {
+        let (client, server) = UnixStream::pair().unwrap();
+        thread::spawn(move || serve(server));
+        one_shot_stream(client, &Request::Health, timeout)
     }
 
     fn read_request_line(stream: &UnixStream) {
@@ -357,51 +367,44 @@ mod tests {
 
     #[test]
     fn one_shot_reads_a_complete_large_response() {
-        let records = (0..4_000)
-            .map(|index| {
-                (
-                    format!("codex:{index}"),
-                    Record {
-                        agent: "codex".to_owned(),
-                        cwd: "/tmp/a-response-larger-than-the-socket-buffer".to_owned(),
-                        ..Record::default()
-                    },
-                )
+        let views = (0..4_000)
+            .map(|index| SessionView {
+                session: format!("session-{index}"),
+                last_attached: index,
+                attached: true,
+                status: "running".to_owned(),
+                attention: false,
+                agent_count: 1,
+                live_agent_count: 1,
+                agents: Vec::new(),
+                pane: format!("%{index}"),
+                reason: "large health response".to_owned(),
+                cwd: "/tmp/a-response-larger-than-the-socket-buffer".to_owned(),
+                updated_at: index,
             })
-            .collect::<BTreeMap<_, _>>();
-        let response = response_pair(
+            .collect::<Vec<_>>();
+        let response = health_pair(
             move |mut server| {
                 read_request_line(&server);
-                write_response(
-                    &mut server,
-                    &Response::state(
-                        9,
-                        State {
-                            version: 1,
-                            records,
-                        },
-                        Topology::default(),
-                        Vec::new(),
-                    ),
-                )
-                .unwrap();
+                write_health(&mut server, 9, Topology::default(), views).unwrap();
             },
             Duration::from_secs(2),
         )
         .unwrap();
         assert_eq!(response.revision, 9);
-        assert_eq!(response.state.unwrap().records.len(), 4_000);
+        assert_eq!(response.views.len(), 4_000);
     }
 
     #[test]
     fn one_shot_distinguishes_disconnect_malformed_rejection_and_timeout() {
         let disconnected =
-            response_pair(|server| read_request_line(&server), Duration::from_secs(1)).unwrap_err();
+            acknowledgement_pair(|server| read_request_line(&server), Duration::from_secs(1))
+                .unwrap_err();
         assert!(
             matches!(disconnected, ClientError::Protocol(message) if message.contains("disconnected"))
         );
 
-        let malformed = response_pair(
+        let malformed = acknowledgement_pair(
             |mut server| {
                 read_request_line(&server);
                 server.write_all(b"not json\n").unwrap();
@@ -411,17 +414,17 @@ mod tests {
         .unwrap_err();
         assert!(matches!(malformed, ClientError::Protocol(_)));
 
-        let rejected = response_pair(
+        let rejected = acknowledgement_pair(
             |mut server| {
                 read_request_line(&server);
-                write_response(&mut server, &Response::error("invalid event")).unwrap();
+                write_rejection(&mut server, "invalid event").unwrap();
             },
             Duration::from_secs(1),
         )
         .unwrap_err();
         assert_eq!(rejected, ClientError::Rejected("invalid event".to_owned()));
 
-        let timed_out = response_pair(
+        let timed_out = acknowledgement_pair(
             |server| {
                 read_request_line(&server);
                 thread::sleep(Duration::from_millis(100));
@@ -430,6 +433,29 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(timed_out, ClientError::Protocol(_)));
+    }
+
+    #[test]
+    fn each_request_accepts_only_its_success_shape() {
+        let acknowledgement = serde_json::to_string(&Acknowledgement { revision: 7 }).unwrap();
+        let health = serde_json::to_string(&HealthResponse {
+            revision: 7,
+            topology: Topology::default(),
+            views: Vec::new(),
+        })
+        .unwrap();
+        let subscription = serde_json::to_string(&SubscriptionUpdate {
+            revision: 7,
+            views: Vec::new(),
+        })
+        .unwrap();
+
+        assert!(decode_response::<Acknowledgement>(&acknowledgement).is_ok());
+        assert!(decode_response::<Acknowledgement>(&health).is_err());
+        assert!(decode_response::<HealthResponse>(&health).is_ok());
+        assert!(decode_response::<HealthResponse>(&acknowledgement).is_err());
+        assert!(decode_response::<SubscriptionUpdate>(&subscription).is_ok());
+        assert!(decode_response::<SubscriptionUpdate>(&health).is_err());
     }
 
     #[test]
@@ -460,16 +486,8 @@ mod tests {
         let (client, mut server) = UnixStream::pair().unwrap();
         let updates = subscription_stream(client).unwrap();
         read_request_line(&server);
-        write_response(
-            &mut server,
-            &Response::state(3, State::initial(), Topology::default(), Vec::new()),
-        )
-        .unwrap();
-        write_response(
-            &mut server,
-            &Response::state(4, State::initial(), Topology::default(), Vec::new()),
-        )
-        .unwrap();
+        write_subscription(&mut server, 3, Vec::new()).unwrap();
+        write_subscription(&mut server, 4, Vec::new()).unwrap();
         assert_eq!(updates.recv().unwrap().unwrap().revision, 3);
         assert_eq!(updates.recv().unwrap().unwrap().revision, 4);
         drop(server);
@@ -505,16 +523,7 @@ mod tests {
             .collect::<Vec<_>>();
         let writer = thread::spawn(move || {
             for revision in 1..=3 {
-                write_response(
-                    &mut server,
-                    &Response::state(
-                        revision,
-                        State::initial(),
-                        Topology::default(),
-                        views.clone(),
-                    ),
-                )
-                .unwrap();
+                write_subscription(&mut server, revision, views.clone()).unwrap();
             }
         });
         thread::sleep(Duration::from_millis(100));
@@ -531,16 +540,8 @@ mod tests {
         let (client, mut server) = UnixStream::pair().unwrap();
         let updates = subscription_stream(client).unwrap();
         read_request_line(&server);
-        write_response(
-            &mut server,
-            &Response::state(3, State::initial(), Topology::default(), Vec::new()),
-        )
-        .unwrap();
-        write_response(
-            &mut server,
-            &Response::state(3, State::initial(), Topology::default(), Vec::new()),
-        )
-        .unwrap();
+        write_subscription(&mut server, 3, Vec::new()).unwrap();
+        write_subscription(&mut server, 3, Vec::new()).unwrap();
         assert_eq!(updates.recv().unwrap().unwrap().revision, 3);
         assert!(matches!(
             updates.recv().unwrap(),
@@ -557,7 +558,7 @@ mod tests {
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             read_request_line(&stream);
-            write_response(&mut stream, &Response::error("shutdown denied")).unwrap();
+            write_rejection(&mut stream, "shutdown denied").unwrap();
         });
         assert_eq!(
             stop(&config).unwrap_err(),

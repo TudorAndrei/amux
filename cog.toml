@@ -5,7 +5,7 @@ tag_prefix = "v"
 pre_bump_hooks = [
   "cargo set-version {{version}}",
   "printf '%s\\n' '{{version}}' > VERSION",
-  "cargo test --all-features",
+  "mise run test",
 ]
 
 [changelog]

@@ -104,6 +104,7 @@ fn daemon_request(state: &Path, request: &str) -> Value {
 struct MonitorSubscription {
     updates: std::sync::mpsc::Receiver<Result<Value, String>>,
     daemon_log: PathBuf,
+    state_dir: PathBuf,
 }
 
 #[cfg(unix)]
@@ -114,8 +115,19 @@ impl MonitorSubscription {
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             match self.updates.recv_timeout(remaining) {
-                Ok(Ok(response)) if predicate(&response) => return response,
-                Ok(Ok(response)) => last = Some(response),
+                Ok(Ok(update)) => {
+                    let fields = update.as_object().expect("subscription object");
+                    assert!(
+                        fields
+                            .keys()
+                            .all(|field| field == "revision" || field == "views")
+                    );
+                    let health = daemon_request(&self.state_dir, r#"{"kind":"health"}"#);
+                    if predicate(&health) {
+                        return health;
+                    }
+                    last = Some(health);
+                }
                 Ok(Err(reason)) => panic!(
                     "tmux monitor subscription closed: {reason}\nlast update: {last:?}\n{}",
                     self.daemon_stderr()
@@ -143,7 +155,11 @@ impl MonitorSubscription {
 }
 
 #[cfg(unix)]
-fn monitor_updates(stream: UnixStream, daemon_log: PathBuf) -> MonitorSubscription {
+fn monitor_updates(
+    stream: UnixStream,
+    daemon_log: PathBuf,
+    state_dir: PathBuf,
+) -> MonitorSubscription {
     use std::io::{BufRead, BufReader};
     let (sender, updates) = std::sync::mpsc::channel();
     thread::spawn(move || {
@@ -167,6 +183,7 @@ fn monitor_updates(stream: UnixStream, daemon_log: PathBuf) -> MonitorSubscripti
     MonitorSubscription {
         updates,
         daemon_log,
+        state_dir,
     }
 }
 
@@ -1569,10 +1586,10 @@ fn lazy_daemon_persists_events_and_serves_revisions() {
     let mut subscription = BufReader::new(subscription);
     let mut initial = String::new();
     subscription.read_line(&mut initial).unwrap();
-    assert_eq!(
-        serde_json::from_str::<Value>(&initial).unwrap()["revision"],
-        1
-    );
+    let initial: Value = serde_json::from_str(&initial).unwrap();
+    assert_eq!(initial["revision"], 1);
+    assert!(initial.get("state").is_none());
+    assert!(initial.get("topology").is_none());
     let mut second = Command::new(env!("CARGO_BIN_EXE_amux-rs"));
     second
         .args(["event", "--agent", "claude", "--event", "Stop"])
@@ -1592,13 +1609,15 @@ fn lazy_daemon_persists_events_and_serves_revisions() {
     subscription.read_line(&mut update).unwrap();
     let update: Value = serde_json::from_str(&update).unwrap();
     assert_eq!(update["revision"], 2);
-    assert_eq!(update["state"]["records"].as_object().unwrap().len(), 2);
+    assert!(update.get("state").is_none());
+    assert!(update.get("topology").is_none());
     assert!(amux(&state).arg("clear").status().unwrap().success());
     let mut cleared = String::new();
     subscription.read_line(&mut cleared).unwrap();
     let cleared: Value = serde_json::from_str(&cleared).unwrap();
     assert_eq!(cleared["revision"], 3);
-    assert!(cleared["state"]["records"].as_object().unwrap().is_empty());
+    assert!(cleared.get("state").is_none());
+    assert!(cleared.get("topology").is_none());
     let listed: Value = serde_json::from_slice(
         &amux(&state)
             .args(["list", "--json"])
@@ -1832,7 +1851,7 @@ fn control_monitor_reconciles_an_isolated_tmux_server() {
     let mut subscription = connect_daemon(&state.join("amux.sock"));
     subscription.write_all(br#"{"kind":"subscribe"}"#).unwrap();
     subscription.write_all(b"\n").unwrap();
-    let subscription = monitor_updates(subscription, daemon_log);
+    let subscription = monitor_updates(subscription, daemon_log, state.clone());
     let pane = String::from_utf8(
         server
             .command()
@@ -2258,46 +2277,53 @@ fn tmux_plugin_loads_native_picker_without_status_wiring() {
 fn a_response_larger_than_the_socket_buffer_arrives_intact() {
     let _lock = real_server_test_lock();
     let state = temp_dir("daemon-large-response");
-    fs::create_dir_all(&state).unwrap();
-    // Seed enough records that the reply comfortably exceeds 8 KiB.
-    let mut records = serde_json::Map::new();
-    for index in 0..400 {
-        records.insert(
-            format!("codex:session-{index}:%{index}"),
-            serde_json::json!({
-                "agent": "codex",
-                "tmux_session": format!("session-{index}"),
-                "tmux_pane": format!("%{index}"),
-                "cwd": "/tmp/large-response-probe",
-                "status": "running",
-                "reason": "large response probe record",
-                "last_event": "PreToolUse",
-                "updated_at": seconds_since_epoch(),
-            }),
+    let server = TmuxServer::start("large-response", "large-response");
+    for index in 0..64 {
+        assert!(
+            server
+                .command()
+                .args([
+                    "new-session",
+                    "-d",
+                    "-t",
+                    "large-response",
+                    "-s",
+                    &format!("large-response-linked-session-{index:02}"),
+                ])
+                .status()
+                .unwrap()
+                .success()
         );
     }
-    fs::write(
-        state.join("state.json"),
-        serde_json::json!({"version": 1, "records": records}).to_string(),
-    )
-    .unwrap();
+    let socket = server.socket_path();
 
     let mut daemon = Command::new(env!("CARGO_BIN_EXE_amux-rs"));
     daemon
         .arg("daemon")
         .env("AMUX_STATE_DIR", &state)
-        .env_remove("TMUX")
+        .env("TMUX", format!("{socket},1,1"))
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let mut daemon = daemon.spawn().unwrap();
 
-    // `subscribe` replies with the whole State. `health` carries only topology
-    // and views, which stay empty without a tmux server to reflect, so it never
-    // reaches the buffer size this guards.
-    let response = daemon_request(&state, r#"{"kind":"subscribe"}"#);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let response = loop {
+        let response = daemon_request(&state, r#"{"kind":"health"}"#);
+        if response["topology"]["sessions"]
+            .as_array()
+            .is_some_and(|sessions| sessions.len() >= 65)
+        {
+            break response;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "daemon did not publish the large topology: {response}"
+        );
+        thread::sleep(Duration::from_millis(20));
+    };
     assert!(
         response.get("error").is_none(),
-        "subscribe reported an error: {response}"
+        "health reported an error: {response}"
     );
     let encoded = response.to_string();
     assert!(
@@ -2306,22 +2332,10 @@ fn a_response_larger_than_the_socket_buffer_arrives_intact() {
          pass even with the truncation bug",
         encoded.len()
     );
-    assert_eq!(
-        response["state"]["records"]
-            .as_object()
-            .expect("records object")
-            .len(),
-        400
-    );
+    assert!(response.get("state").is_none());
+    assert!(response["topology"]["sessions"].as_array().unwrap().len() >= 65);
 
     let _ = daemon_request(&state, r#"{"kind":"shutdown"}"#);
     let _ = daemon.wait();
     fs::remove_dir_all(state).unwrap();
-}
-
-fn seconds_since_epoch() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64
 }
