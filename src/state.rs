@@ -182,8 +182,8 @@ pub const MAX_EVENT_HISTORY_LIMIT: usize = 1_000;
 
 /// Read the newest matching retained events while returning them in their
 /// original chronological order. Malformed lines are skipped just as they are
-/// during compaction, and every record is projected through durable intake's
-/// current minimization policy before it can be returned.
+/// during compaction, and every record is passed through canonical projection
+/// policy before it can be returned.
 pub fn event_history(
     config: &Config,
     filter: EventHistoryFilter<'_>,
@@ -214,12 +214,10 @@ pub fn event_history(
         if bytes.last() == Some(&b'\r') {
             bytes.pop();
         }
-        let Ok(mut event) = serde_json::from_slice::<HistoryEvent>(&bytes) else {
+        let Ok(event) = serde_json::from_slice::<HistoryEvent>(&bytes) else {
             continue;
         };
-        let raw = crate::intake::retained_metadata(&event.record.raw);
-        crate::intake::minimize_record(&mut event.record, raw);
-        event.key = crate::intake::record_key(&event.record);
+        let event = crate::projection::canonical_history(event);
         if filter
             .agent
             .is_some_and(|agent| event.record.agent != agent)

@@ -8,6 +8,7 @@ pub mod intake;
 pub mod ipc;
 pub mod lifecycle;
 pub mod model;
+pub(crate) mod projection;
 pub mod render;
 pub mod sessions;
 pub mod state;

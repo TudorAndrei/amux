@@ -1,40 +1,12 @@
 use crate::config::Config;
-use crate::event::{self, NormalizeInput, TmuxContext};
+use crate::event::{self, TmuxContext};
 use crate::ipc::HookRequest;
-use crate::model::Record;
+use crate::projection;
 use crate::state::WriteEventResult;
 use serde_json::{Map, Value};
 use std::io::Read;
 
-pub const MAX_INPUT_BYTES: u64 = 256 * 1024;
-const MAX_AGENT_BYTES: usize = 64;
-const MAX_EVENT_BYTES: usize = 128;
-const MAX_SESSION_BYTES: usize = 256;
-const MAX_TMUX_BYTES: usize = 256;
-const MAX_CWD_BYTES: usize = 1024;
-const MAX_REASON_BYTES: usize = 256;
-const MAX_STATUS_BYTES: usize = 32;
-const MAX_METADATA_STRING_BYTES: usize = 1024;
-
-const ROOT_STRING_FIELDS: &[&str] = &[
-    "session_id",
-    "sessionID",
-    "sessionId",
-    "id",
-    "cwd",
-    "directory",
-    "hook_event_name",
-    "type",
-    "notification_type",
-    "notificationType",
-    "source",
-    "turn_id",
-    "reason",
-    "agent_id",
-    "agent_type",
-    "parent_agent_id",
-    "parent_session_id",
-];
+pub use crate::projection::MAX_INPUT_BYTES;
 
 pub fn read_hook_json(mut reader: impl Read) -> Result<Value, String> {
     let mut bytes = Vec::new();
@@ -57,191 +29,16 @@ pub fn read_hook_json(mut reader: impl Read) -> Result<Value, String> {
 
 pub fn persist(
     config: &Config,
-    mut request: HookRequest,
-    mut tmux: TmuxContext,
+    request: HookRequest,
+    tmux: TmuxContext,
 ) -> Result<WriteEventResult, String> {
-    if serde_json::to_vec(&request.raw)
-        .map_err(|error| error.to_string())?
-        .len() as u64
-        > MAX_INPUT_BYTES
-    {
-        return Err(format!(
-            "event input exceeds {} KiB",
-            MAX_INPUT_BYTES / 1024
-        ));
-    }
-    request.agent = truncate_utf8(&request.agent, MAX_AGENT_BYTES);
-    request.event = truncate_utf8(&request.event, MAX_EVENT_BYTES);
-    request.status = truncate_utf8(&request.status, MAX_STATUS_BYTES);
-    request.attention = truncate_utf8(&request.attention, 16);
-    request.reason = truncate_utf8(&request.reason, MAX_REASON_BYTES);
-    request.cwd = truncate_utf8(&request.cwd, MAX_CWD_BYTES);
-    tmux.session = truncate_utf8(&tmux.session, MAX_TMUX_BYTES);
-    tmux.window = truncate_utf8(&tmux.window, MAX_TMUX_BYTES);
-    tmux.pane = truncate_utf8(&tmux.pane, MAX_TMUX_BYTES);
-    let raw = retained_metadata(&request.raw);
-    let (_, mut record) = event::normalize_at(NormalizeInput {
-        agent: &request.agent,
-        event_override: &request.event,
-        status_override: &request.status,
-        attention_override: &request.attention,
-        reason_override: &request.reason,
-        raw: raw.clone(),
-        fallback_cwd: request.cwd,
-        tmux,
-    });
-    minimize_record(&mut record, raw);
-    let key = record_key(&record);
+    let projection::ProjectedEvent {
+        key,
+        record,
+        history,
+    } = projection::project(request, tmux, event::now())?;
     let timestamp = record.updated_at;
-    let mut fields = serde_json::to_value(&record)
-        .map_err(|error| error.to_string())?
-        .as_object()
-        .cloned()
-        .unwrap_or_default();
-    fields.insert("key".to_owned(), Value::String(key.clone()));
-    crate::state::write_event(config, key, record, &Value::Object(fields), timestamp)
-}
-
-pub(crate) fn minimize_record(record: &mut Record, raw: Value) {
-    record.agent = truncate_utf8(&record.agent, MAX_AGENT_BYTES);
-    record.agent_session_id = truncate_utf8(&record.agent_session_id, MAX_SESSION_BYTES);
-    record.tmux_session = truncate_utf8(&record.tmux_session, MAX_TMUX_BYTES);
-    record.tmux_window = truncate_utf8(&record.tmux_window, MAX_TMUX_BYTES);
-    record.tmux_pane = truncate_utf8(&record.tmux_pane, MAX_TMUX_BYTES);
-    record.cwd = truncate_utf8(&record.cwd, MAX_CWD_BYTES);
-    record.status = truncate_utf8(&record.status, MAX_STATUS_BYTES);
-    record.reason = truncate_utf8(&record.reason, MAX_REASON_BYTES);
-    record.last_event = truncate_utf8(&record.last_event, MAX_EVENT_BYTES);
-    record.raw = raw;
-}
-
-pub(crate) fn record_key(record: &Record) -> String {
-    if !record.tmux_session.is_empty() && !record.tmux_pane.is_empty() {
-        format!(
-            "{}:{}:{}",
-            record.agent, record.tmux_session, record.tmux_pane
-        )
-    } else if !record.agent_session_id.is_empty() {
-        format!("{}:{}", record.agent, record.agent_session_id)
-    } else {
-        format!("{}:{}", record.agent, record.cwd)
-    }
-}
-
-pub(crate) fn retained_metadata(raw: &Value) -> Value {
-    let Some(input) = raw.as_object() else {
-        return Value::Object(Map::new());
-    };
-    let mut output = Map::new();
-    for key in ROOT_STRING_FIELDS {
-        if let Some(value) = input.get(*key).and_then(Value::as_str) {
-            output.insert(
-                (*key).to_owned(),
-                Value::String(truncate_utf8(value, metadata_limit(key))),
-            );
-        }
-    }
-    if let Some(value) = input.get("is_subagent").and_then(Value::as_bool) {
-        output.insert("is_subagent".to_owned(), Value::Bool(value));
-    }
-    retain_nested(input, &mut output, "event", &["type"]);
-    if let Some(event) = input.get("event").and_then(Value::as_object)
-        && let Some(session) = event.get("session").and_then(Value::as_object)
-        && let Some(id) = session.get("id").and_then(Value::as_str)
-    {
-        output
-            .entry("event".to_owned())
-            .or_insert_with(|| Value::Object(Map::new()))
-            .as_object_mut()
-            .expect("event projection is an object")
-            .insert(
-                "session".to_owned(),
-                serde_json::json!({"id": truncate_utf8(id, MAX_SESSION_BYTES)}),
-            );
-    }
-    if let Some(event) = input.get("event").and_then(Value::as_object)
-        && let Some(properties) = event.get("properties").and_then(Value::as_object)
-    {
-        let mut retained_properties = Map::new();
-        if let Some(session_id) = properties.get("sessionID").and_then(Value::as_str) {
-            retained_properties.insert(
-                "sessionID".to_owned(),
-                Value::String(truncate_utf8(session_id, MAX_SESSION_BYTES)),
-            );
-        }
-        if let Some(status_type) = properties
-            .get("status")
-            .and_then(Value::as_object)
-            .and_then(|status| status.get("type"))
-            .and_then(Value::as_str)
-        {
-            retained_properties.insert(
-                "status".to_owned(),
-                serde_json::json!({
-                    "type": truncate_utf8(status_type, MAX_STATUS_BYTES)
-                }),
-            );
-        }
-        if !retained_properties.is_empty() {
-            output
-                .entry("event".to_owned())
-                .or_insert_with(|| Value::Object(Map::new()))
-                .as_object_mut()
-                .expect("event projection is an object")
-                .insert("properties".to_owned(), Value::Object(retained_properties));
-        }
-    }
-    retain_nested(input, &mut output, "session", &["id"]);
-    retain_nested(input, &mut output, "project", &["directory"]);
-    Value::Object(output)
-}
-
-fn metadata_limit(key: &str) -> usize {
-    match key {
-        "session_id" | "sessionID" | "sessionId" | "id" | "turn_id" | "agent_id"
-        | "parent_agent_id" | "parent_session_id" => MAX_SESSION_BYTES,
-        "cwd" | "directory" => MAX_CWD_BYTES,
-        "hook_event_name" | "type" | "notification_type" | "notificationType" => MAX_EVENT_BYTES,
-        "reason" => MAX_REASON_BYTES,
-        _ => MAX_METADATA_STRING_BYTES,
-    }
-}
-
-fn retain_nested(
-    input: &Map<String, Value>,
-    output: &mut Map<String, Value>,
-    container: &str,
-    fields: &[&str],
-) {
-    let Some(source) = input.get(container).and_then(Value::as_object) else {
-        return;
-    };
-    let mut retained = output
-        .remove(container)
-        .and_then(|value| value.as_object().cloned())
-        .unwrap_or_default();
-    for field in fields {
-        if let Some(value) = source.get(*field).and_then(Value::as_str) {
-            retained.insert(
-                (*field).to_owned(),
-                Value::String(truncate_utf8(value, MAX_METADATA_STRING_BYTES)),
-            );
-        }
-    }
-    if !retained.is_empty() {
-        output.insert(container.to_owned(), Value::Object(retained));
-    }
-}
-
-fn truncate_utf8(value: &str, max_bytes: usize) -> String {
-    if value.len() <= max_bytes {
-        return value.to_owned();
-    }
-    let mut end = max_bytes;
-    while !value.is_char_boundary(end) {
-        end -= 1;
-    }
-    value[..end].to_owned()
+    crate::state::write_event(config, key, record, &history, timestamp)
 }
 
 #[cfg(test)]
@@ -314,101 +111,6 @@ mod tests {
         );
         assert!(!config.state_file().exists());
         fs::remove_dir_all(config.state_dir).unwrap_or(());
-    }
-
-    #[test]
-    fn persisted_metadata_is_allowlisted_and_keeps_subagent_identity() {
-        let config = config("metadata");
-        persist(
-            &config,
-            request(serde_json::json!({
-                "session_id": "session",
-                "agent_id": "child",
-                "agent_type": "explorer",
-                "parent_session_id": "parent",
-                "is_subagent": true,
-                "cwd": "/workspace",
-                "tool_input": {"command": "secret"},
-                "message": "secret prompt",
-                "command": "rm -rf secret",
-                "unknown": "secret"
-            })),
-            TmuxContext::default(),
-        )
-        .unwrap();
-        let state = crate::state::load(&config).unwrap();
-        let record = state.records.values().next().unwrap();
-        assert_eq!(record.raw["agent_id"], "child");
-        assert_eq!(record.raw["is_subagent"], true);
-        for sensitive in ["tool_input", "message", "command", "unknown"] {
-            assert!(record.raw.get(sensitive).is_none(), "retained {sensitive}");
-        }
-        let log = fs::read_to_string(config.events_file()).unwrap();
-        for sensitive in ["secret prompt", "rm -rf secret", "unknown"] {
-            assert!(!log.contains(sensitive), "logged {sensitive}");
-        }
-        fs::remove_dir_all(config.state_dir).unwrap();
-    }
-
-    #[test]
-    fn opencode_envelope_retains_only_session_and_status_lifecycle_fields() {
-        let config = config("opencode-envelope");
-        let mut request = request(serde_json::json!({
-            "event": {
-                "type": "session.status",
-                "properties": {
-                    "sessionID": "opencode-session",
-                    "status": {"type": "idle", "message": "private retry message"},
-                    "metadata": {"command": "private command"}
-                }
-            },
-            "directory": "/workspace",
-            "worktree": "/private/worktree"
-        }));
-        request.agent = "opencode".to_owned();
-        request.event = "session.status".to_owned();
-        persist(&config, request, TmuxContext::default()).unwrap();
-
-        let state = crate::state::load(&config).unwrap();
-        let record = &state.records["opencode:opencode-session"];
-        assert_eq!(record.status, "done");
-        assert!(!record.attention);
-        assert_eq!(record.cwd, "/workspace");
-        assert_eq!(
-            record.raw["event"]["properties"],
-            serde_json::json!({
-                "sessionID": "opencode-session",
-                "status": {"type": "idle"}
-            })
-        );
-        let log = fs::read_to_string(config.events_file()).unwrap();
-        for sensitive in [
-            "private retry message",
-            "private command",
-            "private/worktree",
-        ] {
-            assert!(!log.contains(sensitive), "logged {sensitive}");
-        }
-        fs::remove_dir_all(config.state_dir).unwrap();
-    }
-
-    #[test]
-    fn identifiers_and_key_contributions_are_capped_on_utf8_boundaries() {
-        let config = config("caps");
-        let repeated = "🦀".repeat(400);
-        let mut request = request(serde_json::json!({"session_id": repeated}));
-        request.agent = "é".repeat(100);
-        persist(&config, request, TmuxContext::default()).unwrap();
-        let state = crate::state::load(&config).unwrap();
-        let (key, record) = state.records.iter().next().unwrap();
-        assert!(record.agent.len() <= MAX_AGENT_BYTES);
-        assert!(record.agent_session_id.len() <= MAX_SESSION_BYTES);
-        assert_eq!(
-            key,
-            &format!("{}:{}", record.agent, record.agent_session_id)
-        );
-        assert!(std::str::from_utf8(key.as_bytes()).is_ok());
-        fs::remove_dir_all(config.state_dir).unwrap();
     }
 
     #[test]
