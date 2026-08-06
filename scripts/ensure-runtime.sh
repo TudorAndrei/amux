@@ -42,6 +42,8 @@ gh release download "v$version" \
 	--pattern "$archive" \
 	--dir "$temporary_dir"
 
+gh attestation verify "$temporary_dir/$archive" --repo TudorAndrei/amux
+
 source_binary="$temporary_dir/$package/bin/amux-rs"
 tar -xzf "$temporary_dir/$archive" -C "$temporary_dir"
 if [ ! -f "$source_binary" ]; then

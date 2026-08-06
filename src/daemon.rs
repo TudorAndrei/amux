@@ -10,7 +10,7 @@ use std::io::{BufReader, Read};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -23,8 +23,47 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const BINARY_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 /// How long an event waits for the monitor publication that can identify its pane.
 const MONITOR_CONTEXT_TIMEOUT: Duration = Duration::from_secs(1);
+/// How long a client can hold a connection before it sends its first request.
+const INITIAL_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
+/// Maximum number of daemon client handlers, including subscriptions.
+const MAX_ACTIVE_CLIENTS: usize = 64;
 
 type MonitorUpdates = Arc<(Mutex<u64>, Condvar)>;
+
+struct ClientLimiter {
+    active: AtomicUsize,
+    limit: usize,
+}
+
+impl ClientLimiter {
+    fn new(limit: usize) -> Self {
+        Self {
+            active: AtomicUsize::new(0),
+            limit,
+        }
+    }
+
+    fn try_acquire(self: &Arc<Self>) -> Option<ClientPermit> {
+        self.active
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                (active < self.limit).then_some(active + 1)
+            })
+            .ok()
+            .map(|_| ClientPermit {
+                limiter: Arc::clone(self),
+            })
+    }
+}
+
+struct ClientPermit {
+    limiter: Arc<ClientLimiter>,
+}
+
+impl Drop for ClientPermit {
+    fn drop(&mut self) {
+        self.limiter.active.fetch_sub(1, Ordering::AcqRel);
+    }
+}
 
 /// Size and mtime are enough to notice an upgrade: installs replace the file
 /// rather than editing it in place.
@@ -87,6 +126,7 @@ fn remove_owned_socket(path: &std::path::Path, owned: SocketIdentity) {
 
 struct Shared {
     model: live_model::LiveModel,
+    mutations: Arc<Mutex<()>>,
     shutdown: bool,
     monitor_server: Option<PathBuf>,
     monitor_stop: Option<Arc<AtomicBool>>,
@@ -122,6 +162,7 @@ pub fn run(config: Config) -> Result<(), String> {
     let topology = crate::tmux::Topology::default();
     let shared = Arc::new(Mutex::new(Shared {
         model: live_model::LiveModel::new(&config, state, topology),
+        mutations: Arc::new(Mutex::new(())),
         shutdown: false,
         monitor_server: None,
         monitor_stop: None,
@@ -138,6 +179,7 @@ pub fn run(config: Config) -> Result<(), String> {
     let executable = std::env::current_exe().ok();
     let installed = executable.as_deref().and_then(binary_fingerprint);
     let mut last_binary_check = Instant::now();
+    let clients = Arc::new(ClientLimiter::new(MAX_ACTIVE_CLIENTS));
     loop {
         if shared
             .lock()
@@ -170,9 +212,14 @@ pub fn run(config: Config) -> Result<(), String> {
                     eprintln!("amux daemon: cannot restore blocking mode: {error}");
                     continue;
                 }
+                let Some(permit) = clients.try_acquire() else {
+                    reject_saturated_client(stream);
+                    continue;
+                };
                 let config = config.clone();
                 let shared = Arc::clone(&shared);
                 thread::spawn(move || {
+                    let _permit = permit;
                     if let Err(error) = handle(stream, &config, shared) {
                         eprintln!("amux daemon: client connection failed: {error}");
                     }
@@ -197,11 +244,24 @@ pub fn run(config: Config) -> Result<(), String> {
     Ok(())
 }
 
-fn handle(
+fn reject_saturated_client(mut stream: UnixStream) {
+    let _ = stream.set_write_timeout(Some(INITIAL_REQUEST_TIMEOUT));
+    let _ = ipc::write_rejection(&mut stream, "daemon client limit reached");
+}
+
+fn handle(stream: UnixStream, config: &Config, shared: Arc<Mutex<Shared>>) -> Result<(), String> {
+    handle_with_timeout(stream, config, shared, INITIAL_REQUEST_TIMEOUT)
+}
+
+fn handle_with_timeout(
     mut stream: UnixStream,
     config: &Config,
     shared: Arc<Mutex<Shared>>,
+    initial_timeout: Duration,
 ) -> Result<(), String> {
+    stream
+        .set_read_timeout(Some(initial_timeout))
+        .map_err(|error| error.to_string())?;
     let reader_stream = stream.try_clone().map_err(|error| error.to_string())?;
     let mut reader = BufReader::new(reader_stream);
     let request = match ipc::read_request(&mut reader) {
@@ -255,30 +315,11 @@ fn handle(
             let tmux = context_for_known_pane(&shared, &request.tmux_pane)
                 .or_else(|| context_from_request(&request))
                 .unwrap_or_default();
-            let commit = intake::persist(config, request, tmux)?;
-            let mut guard = shared
-                .lock()
-                .map_err(|_| "daemon state lock poisoned".to_owned())?;
-            let revision = guard.model.apply_event_state(config, commit.state);
-            let retain_keys = guard.model.retain_keys();
-            let maintenance = guard.maintenance.clone();
-            drop(guard);
-            if commit.over_compact_threshold {
-                maintenance.schedule(config.clone(), retain_keys);
-            }
+            let revision = mutate_event_with_checkpoint(config, &shared, request, tmux, || {})?;
             ipc::write_acknowledgement(&mut stream, revision)
         }
         Request::Clear => {
-            let maintenance = shared
-                .lock()
-                .map_err(|_| "daemon state lock poisoned".to_owned())?
-                .maintenance
-                .clone();
-            maintenance.clear(config)?;
-            let mut guard = shared
-                .lock()
-                .map_err(|_| "daemon state lock poisoned".to_owned())?;
-            let revision = guard.model.clear(config);
+            let revision = mutate_clear_with_checkpoint(config, &shared, || {})?;
             ipc::write_acknowledgement(&mut stream, revision)
         }
         Request::Subscribe => {
@@ -341,6 +382,60 @@ fn handle(
             }
         }
     }
+}
+
+fn mutation_coordinator(shared: &Arc<Mutex<Shared>>) -> Result<Arc<Mutex<()>>, String> {
+    shared
+        .lock()
+        .map_err(|_| "daemon state lock poisoned".to_owned())
+        .map(|guard| Arc::clone(&guard.mutations))
+}
+
+fn mutate_event_with_checkpoint(
+    config: &Config,
+    shared: &Arc<Mutex<Shared>>,
+    request: HookRequest,
+    tmux: crate::event::TmuxContext,
+    checkpoint: impl FnOnce(),
+) -> Result<u64, String> {
+    let mutations = mutation_coordinator(shared)?;
+    let _mutation = mutations
+        .lock()
+        .map_err(|_| "daemon mutation lock poisoned".to_owned())?;
+    let commit = intake::persist(config, request, tmux)?;
+    checkpoint();
+    let mut guard = shared
+        .lock()
+        .map_err(|_| "daemon state lock poisoned".to_owned())?;
+    let revision = guard.model.apply_event_state(config, commit.state);
+    let maintenance = guard.maintenance.clone();
+    drop(guard);
+    if commit.over_compact_threshold {
+        maintenance.schedule(config.clone());
+    }
+    Ok(revision)
+}
+
+fn mutate_clear_with_checkpoint(
+    config: &Config,
+    shared: &Arc<Mutex<Shared>>,
+    checkpoint: impl FnOnce(),
+) -> Result<u64, String> {
+    let mutations = mutation_coordinator(shared)?;
+    let _mutation = mutations
+        .lock()
+        .map_err(|_| "daemon mutation lock poisoned".to_owned())?;
+    let maintenance = shared
+        .lock()
+        .map_err(|_| "daemon state lock poisoned".to_owned())?
+        .maintenance
+        .clone();
+    maintenance.clear(config)?;
+    checkpoint();
+    let mut guard = shared
+        .lock()
+        .map_err(|_| "daemon state lock poisoned".to_owned())?;
+    Ok(guard.model.clear(config))
 }
 
 /// A just-started monitor can publish a transient error before its first useful
@@ -465,6 +560,8 @@ mod tests {
     use std::io::{BufRead, BufReader, Write};
     use std::sync::mpsc;
 
+    static NEXT_MUTATION_TEST: AtomicUsize = AtomicUsize::new(0);
+
     /// The upgrade check is only as good as this fingerprint: an install that
     /// replaces the file must read as different, and an untouched file must not.
     #[test]
@@ -488,18 +585,51 @@ mod tests {
 
     fn shared() -> Arc<Mutex<Shared>> {
         let config = subscriber_config();
+        shared_for(&config)
+    }
+
+    fn shared_for(config: &Config) -> Arc<Mutex<Shared>> {
         Arc::new(Mutex::new(Shared {
             model: live_model::LiveModel::new(
-                &config,
+                config,
                 crate::model::State::initial(),
                 crate::tmux::Topology::default(),
             ),
+            mutations: Arc::new(Mutex::new(())),
             shutdown: false,
             monitor_server: None,
             monitor_stop: None,
             monitor_updates: Arc::new((Mutex::new(0), Condvar::new())),
             maintenance: maintenance::Maintenance::default(),
         }))
+    }
+
+    fn mutation_config() -> Config {
+        Config {
+            state_dir: std::env::temp_dir().join(format!(
+                "amux-daemon-mutation-{}-{}",
+                std::process::id(),
+                NEXT_MUTATION_TEST.fetch_add(1, Ordering::Relaxed)
+            )),
+            events_compact_bytes: u64::MAX,
+            ..subscriber_config()
+        }
+    }
+
+    fn mutation_request(session_id: &str) -> HookRequest {
+        HookRequest {
+            agent: "codex".to_owned(),
+            event: "PostToolUse".to_owned(),
+            status: String::new(),
+            attention: String::new(),
+            reason: String::new(),
+            raw: serde_json::json!({"session_id": session_id}),
+            cwd: "/workspace".to_owned(),
+            tmux_pane: String::new(),
+            tmux_session: String::new(),
+            tmux_window: String::new(),
+            tmux_server: None,
+        }
     }
 
     fn subscriber_config() -> Config {
@@ -514,6 +644,139 @@ mod tests {
             hide_subagents: true,
             use_color: false,
         }
+    }
+
+    #[test]
+    fn client_limit_never_exceeds_the_configured_bound() {
+        let limiter = Arc::new(ClientLimiter::new(2));
+        let first = limiter.try_acquire().unwrap();
+        let second = limiter.try_acquire().unwrap();
+        assert!(limiter.try_acquire().is_none());
+        assert_eq!(limiter.active.load(Ordering::Acquire), 2);
+
+        drop(first);
+        let third = limiter.try_acquire().unwrap();
+        assert_eq!(limiter.active.load(Ordering::Acquire), 2);
+        drop(second);
+        drop(third);
+        assert_eq!(limiter.active.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn saturated_client_receives_a_protocol_rejection() {
+        let (client, server) = UnixStream::pair().unwrap();
+        reject_saturated_client(server);
+        let mut response = String::new();
+        BufReader::new(client).read_line(&mut response).unwrap();
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(response["revision"], 0);
+        assert_eq!(response["error"], "daemon client limit reached");
+    }
+
+    #[test]
+    fn silent_client_releases_its_handler_after_the_initial_deadline() {
+        let (_client, server) = UnixStream::pair().unwrap();
+        let worker = thread::spawn(move || {
+            handle_with_timeout(
+                server,
+                &subscriber_config(),
+                shared(),
+                Duration::from_millis(20),
+            )
+        });
+
+        let error = worker.join().unwrap().unwrap_err();
+        assert!(
+            error.contains("timed out") || error.contains("temporarily unavailable"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn event_publication_cannot_pass_an_earlier_durable_commit() {
+        let config = mutation_config();
+        let shared = shared_for(&config);
+        let entered = Arc::new(std::sync::Barrier::new(2));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let first_config = config.clone();
+        let first_shared = Arc::clone(&shared);
+        let first_entered = Arc::clone(&entered);
+        let first_release = Arc::clone(&release);
+        let first = thread::spawn(move || {
+            mutate_event_with_checkpoint(
+                &first_config,
+                &first_shared,
+                mutation_request("first"),
+                crate::event::TmuxContext::default(),
+                || {
+                    first_entered.wait();
+                    first_release.wait();
+                },
+            )
+        });
+        entered.wait();
+
+        let (published, observed) = mpsc::channel();
+        let second_config = config.clone();
+        let second_shared = Arc::clone(&shared);
+        let second = thread::spawn(move || {
+            mutate_event_with_checkpoint(
+                &second_config,
+                &second_shared,
+                mutation_request("second"),
+                crate::event::TmuxContext::default(),
+                || published.send(()).unwrap(),
+            )
+        });
+        assert!(observed.recv_timeout(Duration::from_millis(50)).is_err());
+        release.wait();
+
+        assert_eq!(first.join().unwrap().unwrap(), 1);
+        assert_eq!(second.join().unwrap().unwrap(), 2);
+        assert_eq!(crate::state::load(&config).unwrap().records.len(), 2);
+        fs::remove_dir_all(config.state_dir).unwrap();
+    }
+
+    #[test]
+    fn clear_and_event_publish_in_their_durable_order() {
+        let config = mutation_config();
+        let shared = shared_for(&config);
+        let entered = Arc::new(std::sync::Barrier::new(2));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let event_config = config.clone();
+        let event_shared = Arc::clone(&shared);
+        let event_entered = Arc::clone(&entered);
+        let event_release = Arc::clone(&release);
+        let event = thread::spawn(move || {
+            mutate_event_with_checkpoint(
+                &event_config,
+                &event_shared,
+                mutation_request("before-clear"),
+                crate::event::TmuxContext::default(),
+                || {
+                    event_entered.wait();
+                    event_release.wait();
+                },
+            )
+        });
+        entered.wait();
+
+        let (cleared, observed) = mpsc::channel();
+        let clear_config = config.clone();
+        let clear_shared = Arc::clone(&shared);
+        let clear = thread::spawn(move || {
+            mutate_clear_with_checkpoint(&clear_config, &clear_shared, || {
+                cleared.send(()).unwrap();
+            })
+        });
+        assert!(observed.recv_timeout(Duration::from_millis(50)).is_err());
+        release.wait();
+
+        assert_eq!(event.join().unwrap().unwrap(), 1);
+        assert_eq!(clear.join().unwrap().unwrap(), 2);
+        assert!(!config.state_file().exists());
+        assert!(!config.events_file().exists());
+        fs::remove_dir_all(config.state_dir).unwrap();
     }
 
     #[test]
@@ -568,7 +831,12 @@ mod tests {
         let shared = shared();
         let published = Arc::clone(&shared);
         thread::spawn(move || {
-            let _ = handle(server, &subscriber_config(), shared);
+            let _ = handle_with_timeout(
+                server,
+                &subscriber_config(),
+                shared,
+                Duration::from_millis(20),
+            );
         });
         client.write_all(br#"{"kind":"subscribe"}"#).unwrap();
         client.write_all(b"\n").unwrap();
@@ -579,6 +847,7 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(&initial).unwrap()["revision"],
             0
         );
+        thread::sleep(Duration::from_millis(50));
         {
             let mut guard = published.lock().unwrap();
             let topology = crate::tmux::Topology {

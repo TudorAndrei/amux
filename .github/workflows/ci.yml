@@ -57,8 +57,8 @@ jobs:
         with:
           fetch-depth: 0
       - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
-      - name: Install Cargo version editor
-        run: cargo install cargo-edit --locked
+      - name: Verify Cargo version editor
+        run: cargo set-version --version
       - name: Check conventional commits
         run: cog check --from-latest-tag
       - name: Record pre-bump commit
@@ -103,6 +103,10 @@ jobs:
             target: aarch64-unknown-linux-gnu
             install: sudo apt-get update && sudo apt-get install -y tmux
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -114,6 +118,10 @@ jobs:
         run: mise run package-check
         env:
           TARGET: ${{ matrix.target }}
+      - name: Attest release archive
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: dist/*.tar.gz
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-amux-${{ matrix.target }}

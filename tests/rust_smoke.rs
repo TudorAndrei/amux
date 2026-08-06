@@ -7,7 +7,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -23,6 +23,34 @@ fn real_server_test_lock() -> MutexGuard<'static, ()> {
     REAL_SERVER_TEST_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[cfg(unix)]
+struct ChildGuard(Option<std::process::Child>);
+
+#[cfg(unix)]
+impl ChildGuard {
+    fn new(child: std::process::Child) -> Self {
+        Self(Some(child))
+    }
+
+    fn child_mut(&mut self) -> &mut std::process::Child {
+        self.0.as_mut().expect("child is present")
+    }
+
+    fn finish(mut self) -> std::process::ExitStatus {
+        self.0.take().expect("child is present").wait().unwrap()
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        if let Some(child) = &mut self.0 {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
 }
 
 fn temp_dir(label: &str) -> PathBuf {
@@ -201,12 +229,10 @@ case "$1" in
       '#{pane_id}') printf '%s\n' "${TMUX_PANE:-%20}" ;;
     esac ;;
   list-sessions)
-    separator=$'\037'
-    printf '500%s%s%s0\n' "$separator" multi-agent "$separator" ;;
+    printf "session_last_attached='500' session_name='multi-agent' session_attached='0'\n" ;;
   list-panes)
-    separator=$'\037'
-    printf 'multi-agent%s%%20%scodex%s500%scodex%s/tmp/multi-codex\n' "$separator" "$separator" "$separator" "$separator" "$separator"
-    printf 'multi-agent%s%%21%sclaude%s501%sclaude%s/tmp/multi-claude\n' "$separator" "$separator" "$separator" "$separator" "$separator" ;;
+    printf "session_name='multi-agent' pane_id='%%20' pane_current_command='codex' pane_pid='500' pane_title='codex' pane_current_path='/tmp/multi-codex'\n"
+    printf "session_name='multi-agent' pane_id='%%21' pane_current_command='claude' pane_pid='501' pane_title='claude' pane_current_path='/tmp/multi-claude'\n" ;;
   refresh-client) ;;
 esac
 "##,
@@ -469,6 +495,117 @@ fn cli_clear_doctor_and_option_contracts_are_preserved() {
     );
     fs::remove_dir_all(state).unwrap();
     fs::remove_dir_all(fake_bin).unwrap();
+}
+
+#[test]
+fn unsupported_state_version_is_inspectable_but_never_mutated() {
+    use std::io::Write;
+
+    let state = temp_dir("unsupported-state");
+    let home = temp_dir("unsupported-state-home");
+    let fake_bin = temp_dir("unsupported-state-tmux");
+    fake_tmux(&fake_bin);
+    let path = format!("{}:{}", fake_bin.display(), std::env::var("PATH").unwrap());
+    let original = br#"{"version":2,"records":{}}"#.to_vec();
+    fs::write(state.join("state.json"), &original).unwrap();
+
+    for arguments in [vec!["list", "--json"], vec!["clear"]] {
+        let output = amux(&state).args(arguments).output().unwrap();
+        assert!(!output.status.success());
+        assert_eq!(fs::read(state.join("state.json")).unwrap(), original);
+    }
+
+    let mut event = amux(&state);
+    event
+        .args(["event", "--agent", "codex", "--event", "PostToolUse"])
+        .stdin(Stdio::piped());
+    let mut event = event.spawn().unwrap();
+    event
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(br#"{"session_id":"future"}"#)
+        .unwrap();
+    assert!(!event.wait_with_output().unwrap().status.success());
+    assert_eq!(fs::read(state.join("state.json")).unwrap(), original);
+
+    let daemon = Command::new(env!("CARGO_BIN_EXE_amux-rs"))
+        .arg("daemon")
+        .env("AMUX_STATE_DIR", &state)
+        .env_remove("TMUX")
+        .output()
+        .unwrap();
+    assert!(!daemon.status.success());
+    assert_eq!(fs::read(state.join("state.json")).unwrap(), original);
+
+    let doctor = amux(&state)
+        .env("HOME", &home)
+        .env("AMUX_ROOT", env!("CARGO_MANIFEST_DIR"))
+        .env("PATH", path)
+        .arg("doctor")
+        .output()
+        .unwrap();
+    assert!(!doctor.status.success());
+    assert!(
+        String::from_utf8(doctor.stdout)
+            .unwrap()
+            .contains("state: unsupported version 2")
+    );
+    assert_eq!(fs::read(state.join("state.json")).unwrap(), original);
+
+    fs::remove_dir_all(state).unwrap();
+    fs::remove_dir_all(home).unwrap();
+    fs::remove_dir_all(fake_bin).unwrap();
+}
+
+#[test]
+fn hook_dry_run_does_not_print_unrelated_private_settings() {
+    let state = temp_dir("hook-preview-state");
+    let home = temp_dir("hook-preview-home");
+    let settings = home.join(".codex/hooks.json");
+    fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    let original = br#"{"credential_field":"synthetic-private-value","hooks":{}}"#.to_vec();
+    fs::write(&settings, &original).unwrap();
+
+    let output = amux(&state)
+        .env("HOME", &home)
+        .env("AMUX_ROOT", env!("CARGO_MANIFEST_DIR"))
+        .args(["install-hooks", "--dry-run"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("would update Codex hooks"));
+    assert!(stdout.contains(settings.to_str().unwrap()));
+    assert!(!stdout.contains("credential_field"));
+    assert!(!stdout.contains("synthetic-private-value"));
+    assert_eq!(fs::read(&settings).unwrap(), original);
+    fs::remove_dir_all(state).unwrap();
+    fs::remove_dir_all(home).unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn real_tmux_metadata_keeps_the_old_separator_literal() {
+    let _lock = real_server_test_lock();
+    let session = "alpha__AMUX_FIELD_7F1C9D3E__beta";
+    let server = TmuxServer::start("quoted-fields", session);
+    let state = temp_dir("quoted-fields-state");
+    let output = amux(&state)
+        .env("TMUX", format!("{},1,0", server.socket_path()))
+        .args(["sessions", "--json"])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let sessions: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(sessions[0]["session"], session);
+    fs::remove_dir_all(state).unwrap();
 }
 
 #[test]
@@ -1681,6 +1818,96 @@ fn lazy_daemon_persists_events_and_serves_revisions() {
     assert_eq!(recovered["records"].as_object().unwrap().len(), 1);
     let _ = daemon_request(&state, r#"{"kind":"shutdown"}"#);
     fs::remove_dir_all(state).unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn daemon_exits_after_binary_replacement_and_the_new_binary_takes_ownership() {
+    use std::io::Write;
+
+    let _lock = real_server_test_lock();
+    let root = temp_dir("binary-replacement");
+    let state = root.join("state");
+    let bin = root.join("bin");
+    fs::create_dir_all(&state).unwrap();
+    fs::create_dir_all(&bin).unwrap();
+    let source = Path::new(env!("CARGO_BIN_EXE_amux-rs"));
+    let installed = bin.join("amux-rs");
+    fs::copy(source, &installed).unwrap();
+    fs::set_permissions(&installed, fs::Permissions::from_mode(0o755)).unwrap();
+    let original_modified = fs::metadata(&installed).unwrap().modified().unwrap();
+    let daemon_log = fs::File::create(root.join("old-daemon.log")).unwrap();
+    let old_pid;
+    let mut old = {
+        let child = Command::new(&installed)
+            .arg("daemon")
+            .env("AMUX_STATE_DIR", &state)
+            .env_remove("TMUX")
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(daemon_log))
+            .spawn()
+            .unwrap();
+        old_pid = child.id();
+        ChildGuard::new(child)
+    };
+    assert_eq!(daemon_request(&state, r#"{"kind":"ping"}"#)["revision"], 0);
+
+    let replacement = bin.join("amux-rs.new");
+    fs::copy(source, &replacement).unwrap();
+    fs::set_permissions(&replacement, fs::Permissions::from_mode(0o755)).unwrap();
+    let replacement_time = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
+    fs::File::options()
+        .write(true)
+        .open(&replacement)
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(replacement_time))
+        .unwrap();
+    assert_ne!(
+        fs::metadata(&replacement).unwrap().modified().unwrap(),
+        original_modified
+    );
+    fs::rename(&replacement, &installed).unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        if old.child_mut().try_wait().unwrap().is_some() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "old daemon {old_pid} did not exit after binary replacement"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+    let status = old.finish();
+    assert!(status.success(), "old daemon exited with {status}");
+
+    let mut event = Command::new(&installed);
+    event
+        .args(["event", "--agent", "codex", "--event", "PostToolUse"])
+        .env("AMUX_STATE_DIR", &state)
+        .env_remove("AMUX_NO_DAEMON")
+        .env_remove("TMUX")
+        .stdin(Stdio::piped());
+    let mut event = event.spawn().unwrap();
+    event
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(br#"{"session_id":"replacement"}"#)
+        .unwrap();
+    assert!(event.wait().unwrap().success());
+    assert_eq!(daemon_request(&state, r#"{"kind":"ping"}"#)["revision"], 1);
+    assert_eq!(
+        daemon_request(&state, r#"{"kind":"shutdown"}"#)["revision"],
+        0
+    );
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while state.join("amux.sock").exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(25));
+    }
+    assert!(!state.join("amux.sock").exists());
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

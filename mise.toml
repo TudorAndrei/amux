@@ -9,6 +9,8 @@ gitleaks = "8.30.1"
 actionlint = "1.7.12"
 "npm:markdownlint-cli" = "0.49.1"
 "cargo:cargo-about" = { version = "0.9.1", features = "cli" }
+"cargo:cargo-audit" = "0.22.2"
+"cargo:cargo-edit" = "0.13.13"
 
 [env]
 HK_MISE = 1
@@ -87,3 +89,7 @@ trap 'rm -f "$generated"' EXIT
 cargo about generate --all-features --locked --fail --config about.toml --output-file "$generated" about.hbs
 diff -u THIRD_PARTY_NOTICES.md "$generated"
 '''
+
+[tasks.audit]
+description = "Check Cargo.lock against RustSec advisories"
+run = "cargo audit"

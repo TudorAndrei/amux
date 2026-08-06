@@ -37,6 +37,10 @@ local verification = new Mapping<String, Step> {
     exclusive = true
     check = "mise run test"
   }
+  ["security-audit"] {
+    exclusive = true
+    check = "mise run audit"
+  }
   ["license-notices"] {
     exclusive = true
     depends = List("test-suite")

@@ -23,8 +23,9 @@ whichever binary was current at the time.
 1. **`prefix + U`** — TPM pulls the new checkout, including a new `VERSION`.
 2. **`amux.tmux` runs `scripts/ensure-runtime.sh`** on the next tmux reload or
    amux invocation. It compares `bin/amux-rs --version` against `VERSION`, and
-   when they differ downloads the matching release archive with `gh` and
-   installs the binary over the old one.
+   when they differ downloads the matching release archive with `gh`, verifies
+   its GitHub artifact attestation for `TudorAndrei/amux`, and installs the
+   binary over the old one.
 3. **The script retires the running daemon** with `amux daemon --stop`. This
    matters more than it looks — see "Why the daemon is stopped" below.
 4. **The next hook event starts a fresh daemon** from the new binary. Nothing
@@ -134,9 +135,10 @@ disk, so nothing is lost.
 `amux install-hooks --write`. See [events.md](events.md) for the full mapping
 and for the one case hooks cannot observe.
 
-**`gh` is missing.** `ensure-runtime.sh` needs the GitHub CLI to download the
-release archive. Without it the plugin reports the failure and leaves the
-previous binary in place.
+**`gh` is missing or does not support attestation verification.**
+`ensure-runtime.sh` needs the GitHub CLI to download the release archive and
+run `gh attestation verify`. Without both operations, the plugin reports the
+failure and leaves the previous binary in place.
 
 ## Downgrading
 

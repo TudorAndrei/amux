@@ -147,10 +147,11 @@ workers. Set `AMUX_HIDE_SUBAGENTS=0` to show tmux-backed subagents again.
 
 ## Installation and Requirements
 
-Runtime requirements are tmux 3.2 or newer and GitHub CLI (`gh`). TPM is the
-supported installation and update path: it downloads the matching native
-release binary automatically. Rust, `jq`, and `fzf` are never required at
-runtime. The picker is always the integrated native interface.
+Runtime requirements are tmux 3.2 or newer and a GitHub CLI (`gh`) release that
+supports `gh attestation verify`. TPM is the supported installation and update
+path: it downloads the matching native release binary and verifies its GitHub
+artifact attestation before extraction. Rust, `jq`, and `fzf` are never
+required at runtime. The picker is always the integrated native interface.
 
 Contributors can build from source with Rust 1.96 or newer:
 
@@ -218,6 +219,9 @@ Preview hook installation:
 ```bash
 bin/amux install-hooks --dry-run
 ```
+
+The preview reports only amux-owned operations and destination paths. It does
+not print complete existing settings or unrelated private values.
 
 Install global hooks:
 

@@ -37,9 +37,12 @@ pub struct Pane {
     pub cwd: String,
 }
 
-const FIELD_SEPARATOR: char = '\u{1f}';
-const CONTROL_FIELD_SEPARATOR: &str = "__AMUX_FIELD_7F1C9D3E__";
 const INVOKING_CLIENT_ENV: &str = "AMUX_TMUX_CLIENT";
+
+const SESSION_FORMAT: &str = "session_id=#{q:session_id} session_last_attached=#{q:session_last_attached} session_name=#{q:session_name} session_attached=#{q:session_attached}";
+const DIRECT_SESSION_FORMAT: &str = "session_last_attached=#{q:session_last_attached} session_name=#{q:session_name} session_attached=#{q:session_attached}";
+const PANE_FORMAT: &str = "session_id=#{q:session_id} session_name=#{q:session_name} window_id=#{q:window_id} pane_id=#{q:pane_id} pane_current_command=#{q:pane_current_command} pane_pid=#{q:pane_pid} pane_title=#{q:pane_title} pane_current_path=#{q:pane_current_path}";
+const DIRECT_PANE_FORMAT: &str = "session_name=#{q:session_name} pane_id=#{q:pane_id} pane_current_command=#{q:pane_current_command} pane_pid=#{q:pane_pid} pane_title=#{q:pane_title} pane_current_path=#{q:pane_current_path}";
 
 trait TopologyProvider {
     fn snapshot(&self) -> Pin<Box<dyn Future<Output = Result<Topology, String>> + '_>>;
@@ -52,20 +55,14 @@ struct ControlProvider<'a> {
 impl TopologyProvider for ControlProvider<'_> {
     fn snapshot(&self) -> Pin<Box<dyn Future<Output = Result<Topology, String>> + '_>> {
         Box::pin(async move {
-            let session_format = format!(
-                "#{{session_id}}{CONTROL_FIELD_SEPARATOR}#{{session_last_attached}}{CONTROL_FIELD_SEPARATOR}#{{session_name}}{CONTROL_FIELD_SEPARATOR}#{{session_attached}}"
-            );
-            let pane_format = format!(
-                "#{{session_id}}{CONTROL_FIELD_SEPARATOR}#{{session_name}}{CONTROL_FIELD_SEPARATOR}#{{window_id}}{CONTROL_FIELD_SEPARATOR}#{{pane_id}}{CONTROL_FIELD_SEPARATOR}#{{pane_current_command}}{CONTROL_FIELD_SEPARATOR}#{{pane_pid}}{CONTROL_FIELD_SEPARATOR}#{{pane_title}}{CONTROL_FIELD_SEPARATOR}#{{pane_current_path}}"
-            );
             let sessions = self
                 .client
-                .command(&format!("list-sessions -F '{session_format}'"))
+                .command(&format!("list-sessions -F '{SESSION_FORMAT}'"))
                 .await
                 .map_err(|error| error.to_string())?;
             let panes = self
                 .client
-                .command(&format!("list-panes -a -F '{pane_format}'"))
+                .command(&format!("list-panes -a -F '{PANE_FORMAT}'"))
                 .await
                 .map_err(|error| error.to_string())?;
             Ok(Topology {
@@ -83,16 +80,11 @@ impl TopologyProvider for ControlProvider<'_> {
 }
 
 pub fn direct_topology() -> Topology {
-    let session_format = format!(
-        "#{{session_last_attached}}{FIELD_SEPARATOR}#{{session_name}}{FIELD_SEPARATOR}#{{session_attached}}"
-    );
-    let pane_format = format!(
-        "#{{session_name}}{FIELD_SEPARATOR}#{{pane_id}}{FIELD_SEPARATOR}#{{pane_current_command}}{FIELD_SEPARATOR}#{{pane_pid}}{FIELD_SEPARATOR}#{{pane_title}}{FIELD_SEPARATOR}#{{pane_current_path}}"
-    );
     Topology {
-        sessions: parse_direct_sessions(&tmux_lines("list-sessions", &session_format))
+        sessions: parse_direct_sessions(&tmux_lines("list-sessions", DIRECT_SESSION_FORMAT))
             .unwrap_or_default(),
-        panes: parse_direct_panes(&tmux_lines("list-panes -a", &pane_format)).unwrap_or_default(),
+        panes: parse_direct_panes(&tmux_lines("list-panes -a", DIRECT_PANE_FORMAT))
+            .unwrap_or_default(),
         ..Topology::default()
     }
 }
@@ -118,8 +110,11 @@ fn parse_direct_sessions(lines: &[String]) -> Result<Vec<TmuxSession>, String> {
     lines
         .iter()
         .map(|line| {
-            let fields: Vec<_> = line.split(FIELD_SEPARATOR).collect();
-            if fields.len() != 3 || fields[1].is_empty() {
+            let fields = parse_fields(
+                line,
+                &["session_last_attached", "session_name", "session_attached"],
+            )?;
+            if fields[1].is_empty() {
                 return Err(format!("invalid tmux session record: {line:?}"));
             }
             Ok(TmuxSession {
@@ -136,8 +131,16 @@ fn parse_control_sessions(lines: &[String]) -> Result<Vec<TmuxSession>, String> 
     lines
         .iter()
         .map(|line| {
-            let fields: Vec<_> = line.split(CONTROL_FIELD_SEPARATOR).collect();
-            if fields.len() != 4 || fields[2].is_empty() {
+            let fields = parse_fields(
+                line,
+                &[
+                    "session_id",
+                    "session_last_attached",
+                    "session_name",
+                    "session_attached",
+                ],
+            )?;
+            if fields[2].is_empty() {
                 return Err(format!("invalid tmux control session record: {line:?}"));
             }
             Ok(TmuxSession {
@@ -154,10 +157,17 @@ fn parse_direct_panes(lines: &[String]) -> Result<Vec<Pane>, String> {
     lines
         .iter()
         .map(|line| {
-            let fields: Vec<_> = line.split(FIELD_SEPARATOR).collect();
-            if fields.len() != 6 {
-                return Err(format!("invalid tmux pane record: {line:?}"));
-            }
+            let fields = parse_fields(
+                line,
+                &[
+                    "session_name",
+                    "pane_id",
+                    "pane_current_command",
+                    "pane_pid",
+                    "pane_title",
+                    "pane_current_path",
+                ],
+            )?;
             Ok(Pane {
                 session: fields[0].to_owned(),
                 pane: fields[1].to_owned(),
@@ -174,10 +184,19 @@ fn parse_control_panes(lines: &[String]) -> Result<Vec<Pane>, String> {
     lines
         .iter()
         .map(|line| {
-            let fields: Vec<_> = line.split(CONTROL_FIELD_SEPARATOR).collect();
-            if fields.len() != 8 {
-                return Err(format!("invalid tmux control pane record: {line:?}"));
-            }
+            let fields = parse_fields(
+                line,
+                &[
+                    "session_id",
+                    "session_name",
+                    "window_id",
+                    "pane_id",
+                    "pane_current_command",
+                    "pane_pid",
+                    "pane_title",
+                    "pane_current_path",
+                ],
+            )?;
             Ok(Pane {
                 session: fields[1].to_owned(),
                 window: fields[2].to_owned(),
@@ -186,6 +205,29 @@ fn parse_control_panes(lines: &[String]) -> Result<Vec<Pane>, String> {
                 title: fields[6].to_owned(),
                 cwd: fields[7].to_owned(),
             })
+        })
+        .collect()
+}
+
+fn parse_fields(line: &str, expected: &[&str]) -> Result<Vec<String>, String> {
+    let words = shell_words::split(line)
+        .map_err(|error| format!("invalid quoted tmux record {line:?}: {error}"))?;
+    if words.len() != expected.len() {
+        return Err(format!("invalid tmux field count in record: {line:?}"));
+    }
+    words
+        .into_iter()
+        .zip(expected)
+        .map(|(word, expected)| {
+            let (key, value) = word
+                .split_once('=')
+                .ok_or_else(|| format!("missing tmux field key in record: {line:?}"))?;
+            if key != *expected {
+                return Err(format!(
+                    "expected tmux field {expected}, found {key} in record: {line:?}"
+                ));
+            }
+            Ok(value.to_owned())
         })
         .collect()
 }
@@ -425,37 +467,64 @@ mod tests {
         assert_eq!(topology.panes.len(), 1);
     }
 
-    #[test]
-    fn parser_keeps_pipes_inside_tmux_metadata() {
-        let sessions = parse_control_sessions(&[format!(
-            "$1{CONTROL_FIELD_SEPARATOR}1{CONTROL_FIELD_SEPARATOR}alpha|beta{CONTROL_FIELD_SEPARATOR}1"
-        )])
-        .unwrap();
-        let panes = parse_control_panes(&[format!(
-            "$1{CONTROL_FIELD_SEPARATOR}alpha|beta{CONTROL_FIELD_SEPARATOR}@1{CONTROL_FIELD_SEPARATOR}%1{CONTROL_FIELD_SEPARATOR}codex|agent{CONTROL_FIELD_SEPARATOR}1{CONTROL_FIELD_SEPARATOR}title|detail{CONTROL_FIELD_SEPARATOR}/tmp/a|b"
-        )])
-        .unwrap();
-        assert_eq!(sessions[0].name, "alpha|beta");
-        assert_eq!(panes[0].session, "alpha|beta");
-        assert_eq!(panes[0].command, "codex|agent");
-        assert_eq!(panes[0].title, "title|detail");
-        assert_eq!(panes[0].cwd, "/tmp/a|b");
+    fn encoded(fields: &[(&str, &str)]) -> String {
+        fields
+            .iter()
+            .map(|(key, value)| format!("{key}='{}'", value.replace('\'', "'\\''")))
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     #[test]
-    fn control_parser_uses_a_printable_separator() {
-        let sessions = parse_control_sessions(&[format!(
-            "$1{CONTROL_FIELD_SEPARATOR}1{CONTROL_FIELD_SEPARATOR}linux{CONTROL_FIELD_SEPARATOR}1"
-        )])
+    fn parser_decodes_metadata_without_separator_collisions() {
+        let collision = "__AMUX_FIELD_7F1C9D3E__\u{1f}";
+        let session_name = format!("alpha beta '{collision}");
+        let title = format!("title \\\" '{collision}");
+        let cwd = format!("/tmp/a b/{collision}");
+        let sessions = parse_control_sessions(&[encoded(&[
+            ("session_id", "$1"),
+            ("session_last_attached", "1"),
+            ("session_name", &session_name),
+            ("session_attached", "1"),
+        ])])
         .unwrap();
-        let panes = parse_control_panes(&[format!(
-            "$1{CONTROL_FIELD_SEPARATOR}linux{CONTROL_FIELD_SEPARATOR}@1{CONTROL_FIELD_SEPARATOR}%1{CONTROL_FIELD_SEPARATOR}codex{CONTROL_FIELD_SEPARATOR}1{CONTROL_FIELD_SEPARATOR}title\\detail{CONTROL_FIELD_SEPARATOR}/tmp"
-        )])
+        let panes = parse_control_panes(&[encoded(&[
+            ("session_id", "$1"),
+            ("session_name", &session_name),
+            ("window_id", "@1"),
+            ("pane_id", "%1"),
+            ("pane_current_command", "codex agent"),
+            ("pane_pid", "1"),
+            ("pane_title", &title),
+            ("pane_current_path", &cwd),
+        ])])
         .unwrap();
 
-        assert_eq!(sessions[0].name, "linux");
-        assert_eq!(panes[0].session, "linux");
-        assert_eq!(panes[0].title, r"title\detail");
+        assert_eq!(sessions[0].name, session_name);
+        assert_eq!(panes[0].session, session_name);
+        assert_eq!(panes[0].command, "codex agent");
+        assert_eq!(panes[0].title, title);
+        assert_eq!(panes[0].cwd, cwd);
+    }
+
+    #[test]
+    fn parser_rejects_missing_reordered_and_invalid_quoted_fields() {
+        assert!(
+            parse_control_sessions(&[encoded(&[
+                ("session_id", "$1"),
+                ("session_name", "alpha"),
+                ("session_last_attached", "1"),
+                ("session_attached", "1"),
+            ])])
+            .is_err()
+        );
+        assert!(
+            parse_control_sessions(&[
+                "session_id='$1 session_last_attached=1 session_name=alpha session_attached=1"
+                    .to_owned()
+            ])
+            .is_err()
+        );
     }
 
     #[test]

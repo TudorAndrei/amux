@@ -49,14 +49,13 @@ AMUX_HIDE_SUBAGENTS=0 "$ROOT/bin/amux" sessions --json | jq -e 'all(.session != 
 
 cat >"$FAKE_BIN/tmux" <<'SH'
 #!/usr/bin/env bash
-separator=$'\037'
 session() {
-    printf '%s%s%s%s%s\n' "$1" "$separator" "$2" "$separator" "$3"
+    printf "session_last_attached='%s' session_name='%s' session_attached='%s'\n" \
+        "$1" "$2" "$3"
 }
 pane() {
-    printf '%s%s%s%s%s%s%s%s%s%s%s\n' \
-        "$1" "$separator" "$2" "$separator" "$3" "$separator" \
-        "$4" "$separator" "$5" "$separator" "$6"
+    printf "session_name='%s' pane_id='%s' pane_current_command='%s' pane_pid='%s' pane_title='%s' pane_current_path='%s'\n" \
+        "$1" "$2" "$3" "$4" "$5" "$6"
 }
 case "$1" in
     display-message)

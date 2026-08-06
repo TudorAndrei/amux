@@ -327,14 +327,9 @@ fn owned_hooks(document: &Value) -> Vec<OwnedHook> {
                 .iter()
                 .filter_map(|hook| {
                     let command = hook.get("command").and_then(Value::as_str)?;
-                    is_amux_command(command).then_some((hook, command))
-                })
-                .filter_map(|(hook, command)| {
-                    command_arguments(command).map(|arguments| OwnedCommand {
-                        quoted: command
-                            .find(" event ")
-                            .is_some_and(|index| command[..index].ends_with('\'')),
-                        arguments,
+                    owned_invocation(command).map(|invocation| OwnedCommand {
+                        quoted: invocation.quoted,
+                        arguments: invocation.arguments,
                         timeout: hook.get("timeout").and_then(Value::as_u64),
                     })
                 })
@@ -354,16 +349,43 @@ fn owned_hooks(document: &Value) -> Vec<OwnedHook> {
 }
 
 fn is_amux_command(command: &str) -> bool {
-    // New commands quote the launcher; retain the legacy spelling for upgrades.
-    command.contains("bin/amux event --agent ") || command.contains("bin/amux' event --agent ")
+    owned_invocation(command).is_some()
 }
 
-/// The launcher location is intentionally ignored: source, TPM, and release
-/// installs put the same command at different absolute paths.
-fn command_arguments(command: &str) -> Option<String> {
-    command
-        .find(" event ")
-        .map(|index| command[index + " event".len()..].trim().to_owned())
+struct OwnedInvocation {
+    quoted: bool,
+    arguments: String,
+}
+
+fn owned_invocation(command: &str) -> Option<OwnedInvocation> {
+    let words = shell_words::split(command).ok()?;
+    if words.len() < 6 || words[1] != "event" || words[2] != "--agent" {
+        return None;
+    }
+    let launcher = Path::new(&words[0]);
+    if !launcher.is_absolute()
+        || launcher.file_name()? != "amux"
+        || launcher.parent()?.file_name()? != "bin"
+        || !matches!(words[3].as_str(), "codex" | "claude" | "pi" | "opencode")
+    {
+        return None;
+    }
+    let options = &words[4..];
+    if options.len() % 2 != 0
+        || !options.chunks_exact(2).all(|pair| {
+            matches!(
+                pair[0].as_str(),
+                "--event" | "--status" | "--attention" | "--reason"
+            ) && !pair[1].is_empty()
+        })
+        || !options.chunks_exact(2).any(|pair| pair[0] == "--event")
+    {
+        return None;
+    }
+    Some(OwnedInvocation {
+        quoted: command.trim_start().starts_with('\''),
+        arguments: serde_json::to_string(&words[2..]).ok()?,
+    })
 }
 
 #[derive(Debug)]
@@ -696,9 +718,20 @@ fn write_json(path: &Path, value: &Value, name: &str, mode: Mode) -> Result<(), 
 }
 
 fn write_text(path: &Path, text: &str, name: &str, mode: Mode) -> Result<(), String> {
+    let stdout = io::stdout();
+    write_text_with(path, text, name, mode, &mut stdout.lock())
+}
+
+fn write_text_with(
+    path: &Path,
+    text: &str,
+    name: &str,
+    mode: Mode,
+    output: &mut impl Write,
+) -> Result<(), String> {
     if mode == Mode::DryRun {
-        println!("would update {name}: {}", path.display());
-        print!("{text}");
+        writeln!(output, "would update {name}: {}", path.display())
+            .map_err(|error| error.to_string())?;
         return Ok(());
     }
     // Rename replaces a symlink itself, so resolve it first and atomically
@@ -993,8 +1026,76 @@ mod tests {
     }
 
     #[test]
+    fn dry_run_output_does_not_include_destination_content() {
+        let path = PathBuf::from("/tmp/amux-private-settings.json");
+        let private_document = r#"{"credential_field":"synthetic-private-value"}"#;
+        let mut output = Vec::new();
+
+        write_text_with(
+            &path,
+            private_document,
+            "test settings",
+            Mode::DryRun,
+            &mut output,
+        )
+        .unwrap();
+
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("would update test settings"));
+        assert!(output.contains(path.to_str().unwrap()));
+        assert!(!output.contains("credential_field"));
+        assert!(!output.contains("synthetic-private-value"));
+    }
+
+    #[test]
+    fn hook_ownership_requires_an_exact_amux_invocation() {
+        assert!(is_amux_command(
+            "/old/bin/amux event --agent codex --event Stop"
+        ));
+        assert!(is_amux_command(
+            "'/.tmux/plugins/amux/bin/amux' event --agent claude --event Stop"
+        ));
+        let quoted = format!(
+            "{} event --agent codex --event Stop",
+            shell_quote(Path::new("/tmp/amux path/it's/bin/amux"))
+        );
+        assert!(is_amux_command(&quoted));
+
+        assert!(!is_amux_command(
+            "echo '/old/bin/amux event --agent codex --event Stop'"
+        ));
+        assert!(!is_amux_command(
+            "/usr/bin/env /old/bin/amux event --agent codex --event Stop"
+        ));
+        assert!(!is_amux_command(
+            "'/old/bin/amux event --agent codex --event Stop"
+        ));
+        assert!(!is_amux_command(
+            "relative/bin/amux event --agent codex --event Stop"
+        ));
+        assert!(!is_amux_command(
+            "/old/bin/amux event --agent codex --event"
+        ));
+    }
+
+    #[test]
+    fn cleanup_preserves_a_foreign_command_that_mentions_amux() {
+        let mut value = serde_json::json!({
+            "hooks": [{
+                "type": "command",
+                "command": "echo '/old/bin/amux event --agent codex --event Stop'"
+            }]
+        });
+        let original = value.clone();
+
+        remove_matching(&mut value);
+
+        assert_eq!(value, original);
+    }
+
+    #[test]
     fn templates_quote_paths_with_spaces_quotes_and_backslashes() {
-        let launcher = PathBuf::from("/tmp/amux path/it'\\\"quoted\\\\bin/amux");
+        let launcher = PathBuf::from("/tmp/amux path/it'\\\"quoted\\\\/bin/amux");
         let rendered = template_json(
             &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("hooks/codex/hooks.json"),
             &launcher,

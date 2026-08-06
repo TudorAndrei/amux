@@ -1,11 +1,11 @@
 use crate::config::Config;
-use std::collections::BTreeSet;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 
 #[derive(Default)]
 struct Status {
     active: bool,
+    pending: bool,
 }
 
 #[derive(Clone, Default)]
@@ -14,8 +14,8 @@ pub(super) struct Maintenance {
 }
 
 impl Maintenance {
-    pub fn schedule(&self, config: Config, retain_keys: BTreeSet<String>) {
-        self.schedule_with(move || crate::state::maintain_event_log(&config, &retain_keys));
+    pub fn schedule(&self, config: Config) {
+        self.schedule_with(move || crate::state::maintain_event_log(&config));
     }
 
     pub fn clear(&self, config: &Config) -> Result<(), String> {
@@ -28,7 +28,7 @@ impl Maintenance {
         let mut status = lock
             .lock()
             .map_err(|_| "maintenance coordinator lock poisoned".to_owned())?;
-        while status.active {
+        while status.active || status.pending {
             status = ready
                 .wait(status)
                 .map_err(|_| "maintenance coordinator lock poisoned".to_owned())?;
@@ -36,12 +36,13 @@ impl Maintenance {
         Ok(())
     }
 
-    fn schedule_with(&self, work: impl FnOnce() -> Result<(), String> + Send + 'static) {
+    fn schedule_with(&self, work: impl Fn() -> Result<(), String> + Send + Sync + 'static) {
         let (lock, _) = &*self.inner;
         let Ok(mut status) = lock.lock() else {
             return;
         };
         if status.active {
+            status.pending = true;
             return;
         }
         status.active = true;
@@ -49,13 +50,22 @@ impl Maintenance {
 
         let inner = Arc::clone(&self.inner);
         thread::spawn(move || {
-            if let Err(error) = work() {
-                eprintln!("amux daemon: {error}");
-            }
-            let (lock, ready) = &*inner;
-            if let Ok(mut status) = lock.lock() {
+            loop {
+                if let Err(error) = work() {
+                    eprintln!("amux daemon: {error}");
+                }
+                let (lock, ready) = &*inner;
+                let Ok(mut status) = lock.lock() else {
+                    return;
+                };
+                if status.pending {
+                    status.pending = false;
+                    drop(status);
+                    continue;
+                }
                 status.active = false;
                 ready.notify_all();
+                return;
             }
         });
     }
@@ -65,7 +75,9 @@ impl Maintenance {
 mod tests {
     use super::*;
     use crate::state::{CompactionStage, compact_events_with_checkpoint};
+    use std::collections::BTreeMap;
     use std::fs;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Barrier, mpsc};
     use std::time::Duration;
 
@@ -97,6 +109,15 @@ mod tests {
             format!("{}\n", serde_json::json!({"key":"a","ordinal":1})),
         )
         .unwrap();
+        fs::write(
+            config.state_file(),
+            serde_json::to_vec(&crate::model::State {
+                version: crate::state::STATE_VERSION,
+                records: BTreeMap::from([("a".to_owned(), crate::model::Record::default())]),
+            })
+            .unwrap(),
+        )
+        .unwrap();
         let entered = Arc::new(Barrier::new(2));
         let release = Arc::new(Barrier::new(2));
         let work_config = config.clone();
@@ -104,17 +125,13 @@ mod tests {
         let work_release = Arc::clone(&release);
         let maintenance = Maintenance::default();
         maintenance.schedule_with(move || {
-            compact_events_with_checkpoint(
-                &work_config,
-                &BTreeSet::from(["a".to_owned()]),
-                |stage| {
-                    if stage == CompactionStage::Renamed {
-                        work_entered.wait();
-                        work_release.wait();
-                    }
-                    Ok(())
-                },
-            )
+            compact_events_with_checkpoint(&work_config, |stage| {
+                if stage == CompactionStage::Renamed {
+                    work_entered.wait();
+                    work_release.wait();
+                }
+                Ok(())
+            })
         });
         entered.wait();
 
@@ -136,5 +153,30 @@ mod tests {
         assert!(!config.compacting_events_file().exists());
         assert!(!config.retained_events_file().exists());
         fs::remove_dir_all(config.state_dir).unwrap();
+    }
+
+    #[test]
+    fn a_request_during_active_maintenance_runs_one_more_pass() {
+        let maintenance = Maintenance::default();
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let work_entered = Arc::clone(&entered);
+        let work_release = Arc::clone(&release);
+        let work_calls = Arc::clone(&calls);
+
+        maintenance.schedule_with(move || {
+            if work_calls.fetch_add(1, Ordering::AcqRel) == 0 {
+                work_entered.wait();
+                work_release.wait();
+            }
+            Ok(())
+        });
+        entered.wait();
+        maintenance.schedule_with(|| Ok(()));
+        release.wait();
+        maintenance.wait_idle().unwrap();
+
+        assert_eq!(calls.load(Ordering::Acquire), 2);
     }
 }

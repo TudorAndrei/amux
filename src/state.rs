@@ -9,7 +9,20 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::thread;
 use std::time::Duration;
 
+pub const STATE_VERSION: u8 = 1;
+
 pub fn load(config: &Config) -> Result<State, String> {
+    let state = load_for_inspection(config)?;
+    if state.version != STATE_VERSION {
+        return Err(format!(
+            "unsupported state version {}; this amux supports version {STATE_VERSION}",
+            state.version
+        ));
+    }
+    Ok(state)
+}
+
+pub(crate) fn load_for_inspection(config: &Config) -> Result<State, String> {
     let path = config.state_file();
     if !path.exists() {
         return Ok(State::initial());
@@ -42,8 +55,7 @@ pub fn ensure_private_dir(config: &Config) -> Result<(), String> {
 /// because it also protects stale socket replacement and listener binding.
 pub fn recover_startup(config: &Config) -> Result<State, String> {
     adopt_orphaned_log(config)?;
-    let state = load(config)?;
-    compact_events(config, &state.records.keys().cloned().collect())?;
+    compact_events(config)?;
     load(config)
 }
 
@@ -151,7 +163,7 @@ pub fn commit_event(
     if changed {
         append_event(config, event_log)?;
     }
-    state.version = 1;
+    state.version = STATE_VERSION;
     state.records.insert(key, record);
     let cutoff = now - config.stale_seconds;
     state
@@ -307,6 +319,7 @@ fn adopt_orphaned_log(config: &Config) -> Result<(), String> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CompactionStage {
+    BeforeRotate,
     Renamed,
     Retained,
     RetainedWritten,
@@ -318,19 +331,20 @@ pub(crate) enum CompactionStage {
 /// Retain the most recent configured number of valid events for every live
 /// record key. The potentially long streaming pass intentionally happens with
 /// no state lock held so hooks can continue appending to a fresh log.
-fn compact_events(config: &Config, retain_keys: &BTreeSet<String>) -> Result<(), String> {
-    compact_events_with(config, retain_keys, |_| Ok(()))
+fn compact_events(config: &Config) -> Result<(), String> {
+    compact_events_with(config, |_| Ok(()))
 }
 
 fn compact_events_with(
     config: &Config,
-    retain_keys: &BTreeSet<String>,
     mut checkpoint: impl FnMut(CompactionStage) -> Result<(), String>,
 ) -> Result<(), String> {
     if config.events_per_session == 0 || !config.events_file().exists() {
         return Ok(());
     }
     let compacting = config.compacting_events_file();
+    checkpoint(CompactionStage::BeforeRotate)?;
+    let retain_keys;
     {
         let _lock = acquire(config)?;
         if compacting.exists() {
@@ -342,6 +356,11 @@ fn compact_events_with(
         if !config.events_file().exists() {
             return Ok(());
         }
+        retain_keys = load(config)?
+            .records
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>();
         fs::rename(config.events_file(), &compacting).map_err(|error| error.to_string())?;
     }
     let retained_path = config.retained_events_file();
@@ -352,7 +371,7 @@ fn compact_events_with(
     let result = (|| {
         sync_dir(&config.state_dir)?;
         checkpoint(CompactionStage::Renamed)?;
-        let retained = retained_events(config, retain_keys, &compacting)?;
+        let retained = retained_events(config, &retain_keys, &compacting)?;
         checkpoint(CompactionStage::Retained)?;
         write_lines(&retained_path, &retained)?;
         checkpoint(CompactionStage::RetainedWritten)?;
@@ -391,10 +410,9 @@ fn compact_events_with(
 #[cfg(test)]
 pub(crate) fn compact_events_with_checkpoint(
     config: &Config,
-    retain_keys: &BTreeSet<String>,
     checkpoint: impl FnMut(CompactionStage) -> Result<(), String>,
 ) -> Result<(), String> {
-    compact_events_with(config, retain_keys, checkpoint)
+    compact_events_with(config, checkpoint)
 }
 
 fn recover_compaction(
@@ -527,9 +545,9 @@ fn clear_maintenance_diagnostic(config: &Config) -> Result<(), String> {
 /// Recover and compact the event log as one maintenance operation. A failure
 /// remains visible to the caller and in the diagnostic file. A later success
 /// removes the diagnostic.
-pub fn maintain_event_log(config: &Config, retain_keys: &BTreeSet<String>) -> Result<(), String> {
+pub fn maintain_event_log(config: &Config) -> Result<(), String> {
     let result = adopt_orphaned_log(config)
-        .and_then(|_| compact_events(config, retain_keys))
+        .and_then(|_| compact_events(config))
         .and_then(|_| clear_maintenance_diagnostic(config));
     if let Err(error) = &result {
         let _ = write_maintenance_diagnostic(config, error);
@@ -539,6 +557,9 @@ pub fn maintain_event_log(config: &Config, retain_keys: &BTreeSet<String>) -> Re
 
 pub fn clear(config: &Config) -> Result<(), String> {
     let _lock = acquire(config)?;
+    if config.state_file().exists() {
+        load(config)?;
+    }
     let mut removed = false;
     for path in [
         config.state_file(),
@@ -588,6 +609,17 @@ mod tests {
         serde_json::json!({"key": key, "ordinal": ordinal}).to_string()
     }
 
+    fn write_state_keys(config: &Config, keys: &[&str]) {
+        let state = State {
+            version: STATE_VERSION,
+            records: keys
+                .iter()
+                .map(|key| ((*key).to_owned(), Record::default()))
+                .collect(),
+        };
+        fs::write(config.state_file(), serde_json::to_vec(&state).unwrap()).unwrap();
+    }
+
     #[test]
     fn compaction_caps_each_live_key_and_preserves_global_chronology() {
         let config = config(2);
@@ -616,8 +648,8 @@ mod tests {
             .unwrap()
             .write_all(&[0xff, b'\n'])
             .unwrap();
-        let keys = BTreeSet::from([a.to_owned(), b.to_owned()]);
-        compact_events(&config, &keys).unwrap();
+        write_state_keys(&config, &[a, b]);
+        compact_events(&config).unwrap();
         let events: Vec<Value> = fs::read_to_string(config.events_file())
             .unwrap()
             .lines()
@@ -702,11 +734,26 @@ mod tests {
     }
 
     #[test]
+    fn normal_load_rejects_an_unsupported_version_without_changing_it() {
+        let config = config(2);
+        ensure_private_dir(&config).unwrap();
+        let contents = r#"{"version":2,"records":{}}"#;
+        fs::write(config.state_file(), contents).unwrap();
+
+        let error = load(&config).unwrap_err();
+
+        assert!(error.contains("unsupported state version 2"));
+        assert_eq!(load_for_inspection(&config).unwrap().version, 2);
+        assert_eq!(fs::read_to_string(config.state_file()).unwrap(), contents);
+        fs::remove_dir_all(config.state_dir).unwrap();
+    }
+
+    #[test]
     fn successful_maintenance_clears_an_old_diagnostic() {
         let config = config(2);
         write_maintenance_diagnostic(&config, "old failure").unwrap();
 
-        maintain_event_log(&config, &BTreeSet::new()).unwrap();
+        maintain_event_log(&config).unwrap();
 
         assert!(!config.maintenance_diagnostic_file().exists());
         fs::remove_dir_all(config.state_dir).unwrap();
@@ -729,22 +776,19 @@ mod tests {
                 format!("{}\n{}\n", line("a", 1), line("a", 2)),
             )
             .unwrap();
+            write_state_keys(&config, &["a"]);
             let mut appended_live = false;
-            let error = compact_events_with_checkpoint(
-                &config,
-                &BTreeSet::from(["a".to_owned()]),
-                |stage| {
-                    if !appended_live && stage == CompactionStage::Renamed {
-                        fs::write(config.events_file(), format!("{}\n", line("a", 3))).unwrap();
-                        appended_live = true;
-                    }
-                    if stage == stage_to_fail {
-                        Err(format!("injected failure at {stage:?}"))
-                    } else {
-                        Ok(())
-                    }
-                },
-            )
+            let error = compact_events_with_checkpoint(&config, |stage| {
+                if !appended_live && stage == CompactionStage::Renamed {
+                    fs::write(config.events_file(), format!("{}\n", line("a", 3))).unwrap();
+                    appended_live = true;
+                }
+                if stage == stage_to_fail {
+                    Err(format!("injected failure at {stage:?}"))
+                } else {
+                    Ok(())
+                }
+            })
             .unwrap_err();
             assert!(
                 error.contains("was recovered"),
@@ -753,7 +797,7 @@ mod tests {
             assert!(!config.compacting_events_file().exists());
             assert!(!config.retained_events_file().exists());
 
-            compact_events(&config, &BTreeSet::from(["a".to_owned()])).unwrap();
+            compact_events(&config).unwrap();
             let ordinals = fs::read_to_string(config.events_file())
                 .unwrap()
                 .lines()
@@ -762,6 +806,52 @@ mod tests {
             assert_eq!(ordinals, [Some(2), Some(3)], "{stage_to_fail:?}");
             fs::remove_dir_all(config.state_dir).unwrap();
         }
+    }
+
+    #[test]
+    fn compaction_captures_keys_at_the_same_cut_as_log_rotation() {
+        use std::sync::{Arc, Barrier};
+
+        let config = config(2);
+        ensure_private_dir(&config).unwrap();
+        write_state_keys(&config, &["a"]);
+        fs::write(config.events_file(), format!("{}\n", line("a", 1))).unwrap();
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let worker_config = config.clone();
+        let worker_entered = Arc::clone(&entered);
+        let worker_release = Arc::clone(&release);
+        let worker = thread::spawn(move || {
+            compact_events_with_checkpoint(&worker_config, |stage| {
+                if stage == CompactionStage::BeforeRotate {
+                    worker_entered.wait();
+                    worker_release.wait();
+                }
+                Ok(())
+            })
+        });
+        entered.wait();
+
+        commit_event(
+            &config,
+            "b".to_owned(),
+            Record {
+                agent: "codex".to_owned(),
+                status: "running".to_owned(),
+                updated_at: 10,
+                ..Record::default()
+            },
+            &serde_json::json!({"key": "b", "ordinal": 2}),
+            10,
+        )
+        .unwrap();
+        release.wait();
+        worker.join().unwrap().unwrap();
+
+        let history = fs::read_to_string(config.events_file()).unwrap();
+        assert!(history.contains("\"key\":\"a\""));
+        assert!(history.contains("\"key\":\"b\""));
+        fs::remove_dir_all(config.state_dir).unwrap();
     }
 
     #[test]
@@ -784,7 +874,7 @@ mod tests {
         .unwrap();
         assert!(written.logged);
         assert!(!written.over_compact_threshold);
-        compact_events(&config, &BTreeSet::from(["a".to_owned()])).unwrap();
+        compact_events(&config).unwrap();
         assert_eq!(
             fs::read_to_string(config.events_file())
                 .unwrap()

@@ -70,6 +70,7 @@ for its supported release targets.
 | `serde_core` | 1.0.229 | `MIT OR Apache-2.0` | [source](https://github.com/serde-rs/serde) |
 | `serde_derive` | 1.0.229 | `MIT OR Apache-2.0` | [source](https://github.com/serde-rs/serde) |
 | `serde_json` | 1.0.151 | `MIT OR Apache-2.0` | [source](https://github.com/serde-rs/json) |
+| `shell-words` | 1.1.1 | `MIT OR Apache-2.0` | [source](https://github.com/tmiasko/shell-words) |
 | `signal-hook` | 0.3.18 | `Apache-2.0 OR MIT` | [source](https://github.com/vorner/signal-hook) |
 | `signal-hook-mio` | 0.2.5 | `MIT OR Apache-2.0` | [source](https://github.com/vorner/signal-hook) |
 | `signal-hook-registry` | 1.4.8 | `MIT OR Apache-2.0` | [source](https://github.com/vorner/signal-hook) |

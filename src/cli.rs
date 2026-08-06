@@ -274,8 +274,8 @@ fn cmd_doctor(config: &Config) -> i32 {
         failure = true;
     }
     if config.state_file().exists() {
-        match state::load(config) {
-            Ok(state) if state.version == 1 => {
+        match state::load_for_inspection(config) {
+            Ok(state) if state.version == state::STATE_VERSION => {
                 println!("state: v1 compatible ({})", config.state_file().display());
             }
             Ok(state) => {

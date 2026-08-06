@@ -105,10 +105,6 @@ impl LiveModel {
         &self.topology
     }
 
-    pub fn retain_keys(&self) -> std::collections::BTreeSet<String> {
-        self.state.records.keys().cloned().collect()
-    }
-
     fn publish(&mut self, config: &Config) -> u64 {
         self.views = crate::sessions::views_with_topology(config, &self.state, &self.topology);
         self.revision = self
@@ -276,14 +272,14 @@ mod tests {
         assert_eq!(event.revision, 1);
         assert_eq!(event.views[0].agents[0].status, "running");
         assert_eq!(event.views[0].agents[0].title, "initial");
-        assert_eq!(model.retain_keys().len(), 1);
+        assert_eq!(model.state.records.len(), 1);
 
         assert_eq!(model.clear(&config), 2);
         let cleared = model.subscription_update(Some(1)).unwrap();
         assert_eq!(cleared.revision, 2);
         assert_eq!(cleared.views[0].agent_count, 1);
         assert_eq!(cleared.views[0].agents[0].status, "running");
-        assert!(model.retain_keys().is_empty());
+        assert!(model.state.records.is_empty());
     }
 
     #[test]
