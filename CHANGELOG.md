@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.6.0](https://github.com/TudorAndrei/amux/compare/6d509d9bf364199612e6bb317287da165854d0ca..v0.6.0) - 2026-08-06
+#### Features
+- harden runtime and release verification - ([6d509d9](https://github.com/TudorAndrei/amux/commit/6d509d9bf364199612e6bb317287da165854d0ca)) - TudorAndrei
+
+- - -
+
 ## [v0.5.4](https://github.com/TudorAndrei/amux/compare/92c043a97df7ac1944db9189b7f4eda7ef82da80..v0.5.4) - 2026-08-05
 #### Bug Fixes
 - acknowledge daemon shutdown before exit - ([4493b48](https://github.com/TudorAndrei/amux/commit/4493b4850a45e82af337f7957a60f66a065cb5db)) - TudorAndrei
